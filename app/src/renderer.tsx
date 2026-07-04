@@ -224,6 +224,20 @@ function getDpiScale() {
   return Math.min(1, Math.max(0.78, 1 / Math.sqrt(ratio)));
 }
 
+function getMonitorDpiPercent() {
+  return Math.round((window.devicePixelRatio || 1) * 100);
+}
+
+function getSavedPanelTextScale() {
+  const savedValue = Number(window.localStorage.getItem('raw-electron-panel-text-scale'));
+
+  if (!Number.isFinite(savedValue)) {
+    return 0.82;
+  }
+
+  return Math.min(1.1, Math.max(0.6, savedValue));
+}
+
 function isSlider(control: ToolSection['controls'][number]): control is SliderOption {
   return 'min' in control;
 }
@@ -356,7 +370,10 @@ function updateSectionToggle(sections: ToolSection[], sectionId: ToolSectionId, 
 
 function App() {
   const [theme, setTheme] = useState<ThemeMode>('dark');
-  const [dpiScale, setDpiScale] = useState(getDpiScale);
+  const [dpiUiScale, setDpiUiScale] = useState(getDpiScale);
+  const [monitorDpiPercent, setMonitorDpiPercent] = useState(getMonitorDpiPercent);
+  const [panelTextScale, setPanelTextScale] = useState(getSavedPanelTextScale);
+  const [showSettings, setShowSettings] = useState(false);
   const [activeTool, setActiveTool] = useState<ActiveTool>('edit');
   const [images, setImages] = useState<ImageFile[]>([]);
   const [selectedImagePath, setSelectedImagePath] = useState<string | null>(null);
@@ -385,7 +402,10 @@ function App() {
   });
 
   useEffect(() => {
-    const updateScale = () => setDpiScale(getDpiScale());
+    const updateScale = () => {
+      setDpiUiScale(getDpiScale());
+      setMonitorDpiPercent(getMonitorDpiPercent());
+    };
     window.addEventListener('resize', updateScale);
     const intervalId = window.setInterval(updateScale, 1000);
 
@@ -393,6 +413,24 @@ function App() {
       window.removeEventListener('resize', updateScale);
       window.clearInterval(intervalId);
     };
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem('raw-electron-panel-text-scale', String(panelTextScale));
+  }, [panelTextScale]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'F5') {
+        return;
+      }
+
+      event.preventDefault();
+      setShowSettings((current) => !current);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   const previewFilter = useMemo(() => {
@@ -486,16 +524,26 @@ function App() {
       className="raw-app"
       data-theme={theme}
       data-tool={activeTool}
-      style={{ '--ui-scale': dpiScale } as React.CSSProperties}
+      style={
+        {
+          '--ui-scale': dpiUiScale,
+          '--panel-text-scale': panelTextScale,
+        } as React.CSSProperties
+      }
     >
       <Topbar
         theme={theme}
-        dpiScale={dpiScale}
+        monitorDpiPercent={monitorDpiPercent}
+        panelTextScale={panelTextScale}
+        showSettings={showSettings}
         activeTool={activeTool}
         canExport={Boolean(selectedImage)}
         onOpenImages={openImages}
         onExportImage={exportSelectedImage}
         onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+        onToggleSettings={() => setShowSettings((current) => !current)}
+        onPanelTextScaleChange={setPanelTextScale}
+        onResetPanelTextScale={() => setPanelTextScale(0.82)}
       />
       <main className="workspace">
         <Viewer
@@ -585,20 +633,30 @@ function App() {
 
 function Topbar({
   theme,
-  dpiScale,
+  monitorDpiPercent,
+  panelTextScale,
+  showSettings,
   activeTool,
   canExport,
   onOpenImages,
   onExportImage,
   onToggleTheme,
+  onToggleSettings,
+  onPanelTextScaleChange,
+  onResetPanelTextScale,
 }: {
   theme: ThemeMode;
-  dpiScale: number;
+  monitorDpiPercent: number;
+  panelTextScale: number;
+  showSettings: boolean;
   activeTool: ActiveTool;
   canExport: boolean;
   onOpenImages: () => void;
   onExportImage: () => void;
   onToggleTheme: () => void;
+  onToggleSettings: () => void;
+  onPanelTextScaleChange: (value: number) => void;
+  onResetPanelTextScale: () => void;
 }) {
   const ThemeIcon = theme === 'dark' ? Moon : Sun;
   const cropTitle = activeTool === 'crop' ? '원본(4 x 3)' : '';
@@ -640,13 +698,69 @@ function Topbar({
         </button>
         <span className="dpi-indicator" title="DPI에 따라 자동 조절됩니다">
           <Monitor size={16} />
-          {Math.round(dpiScale * 100)}%
+          {monitorDpiPercent}%
         </span>
-        <button className="icon-button" aria-label="더 보기">
+        <button
+          className={`icon-button ${showSettings ? 'active-button' : ''}`}
+          aria-label="설정"
+          aria-expanded={showSettings}
+          onClick={onToggleSettings}
+        >
           <MoreHorizontal size={24} />
         </button>
       </div>
+      {showSettings && (
+          <SettingsPopover
+          monitorDpiPercent={monitorDpiPercent}
+          panelTextScale={panelTextScale}
+          onPanelTextScaleChange={onPanelTextScaleChange}
+          onResetPanelTextScale={onResetPanelTextScale}
+        />
+      )}
     </header>
+  );
+}
+
+function SettingsPopover({
+  monitorDpiPercent,
+  panelTextScale,
+  onPanelTextScaleChange,
+  onResetPanelTextScale,
+}: {
+  monitorDpiPercent: number;
+  panelTextScale: number;
+  onPanelTextScaleChange: (value: number) => void;
+  onResetPanelTextScale: () => void;
+}) {
+  return (
+    <section className="settings-popover" aria-label="설정">
+      <div className="settings-header">
+        <h2>설정</h2>
+        <button onClick={onResetPanelTextScale}>기본값</button>
+      </div>
+      <label className="scale-setting">
+        <span className="slider-meta">
+          <span>패널 글자</span>
+          <output>{Math.round(panelTextScale * 100)}%</output>
+        </span>
+        <input
+          type="range"
+          min={60}
+          max={110}
+          step={2}
+          value={Math.round(panelTextScale * 100)}
+          onChange={(event) => onPanelTextScaleChange(Number(event.currentTarget.value) / 100)}
+        />
+      </label>
+      <div className="settings-info">
+        <span>모니터 DPI</span>
+        <strong>{monitorDpiPercent}%</strong>
+      </div>
+      <div className="settings-info">
+        <span>단축키</span>
+        <strong>F5</strong>
+      </div>
+    </section>
   );
 }
 

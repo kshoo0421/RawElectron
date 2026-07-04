@@ -14,6 +14,7 @@
 
 .raw-app {
   --ui-scale: 1;
+  --panel-text-scale: 0.82;
   --app-bg: #050505;
   --viewer-bg: #000000;
   --topbar-bg: #1f1f1f;
@@ -100,6 +101,7 @@ button:disabled {
 }
 
 .topbar {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -181,6 +183,80 @@ button:disabled {
 
 .icon-button.cloud {
   color: var(--text);
+}
+
+.icon-button.active-button {
+  color: #fff;
+  background: var(--active);
+}
+
+.settings-popover {
+  position: absolute;
+  top: calc(40px * var(--ui-scale));
+  right: calc(10px * var(--ui-scale));
+  z-index: 30;
+  width: calc(230px * var(--ui-scale));
+  padding: calc(12px * var(--ui-scale));
+  border: 1px solid var(--button-border);
+  border-radius: 8px;
+  color: var(--text-soft);
+  background: var(--panel-bg);
+  box-shadow: 0 calc(14px * var(--ui-scale)) calc(34px * var(--ui-scale)) rgba(0, 0, 0, 0.36);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: calc(10px * var(--ui-scale));
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 760;
+}
+
+.settings-header button {
+  height: calc(26px * var(--ui-scale));
+  padding: 0 calc(8px * var(--ui-scale));
+  border: 1px solid var(--button-border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: var(--button-bg);
+  font-size: 1.05rem;
+  cursor: pointer;
+}
+
+.scale-setting {
+  display: grid;
+  gap: calc(6px * var(--ui-scale));
+  padding-bottom: calc(10px * var(--ui-scale));
+}
+
+.scale-setting input {
+  width: 100%;
+  height: calc(20px * var(--ui-scale));
+  margin: 0;
+  accent-color: var(--active);
+  cursor: pointer;
+}
+
+.settings-info {
+  display: flex;
+  justify-content: space-between;
+  padding-top: calc(7px * var(--ui-scale));
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 1.05rem;
+}
+
+.settings-info + .settings-info {
+  margin-top: calc(7px * var(--ui-scale));
+}
+
+.settings-info strong {
+  color: var(--text-soft);
 }
 
 .sync-dot {
@@ -730,6 +806,7 @@ button:disabled {
   background: var(--panel-bg);
   border-left: 1px solid var(--strong-border);
   border-right: 1px solid var(--strong-border);
+  font-size: calc(10px * var(--panel-text-scale));
 }
 
 .panel-scroll {
@@ -756,7 +833,7 @@ button:disabled {
 
 .panel-header h1 {
   margin: 0;
-  font-size: 1.8rem;
+  font-size: 2.25em;
   font-weight: 750;
 }
 
@@ -799,7 +876,7 @@ button:disabled {
 .tab-row button {
   position: relative;
   color: var(--text-muted);
-  font-size: 1.25rem;
+  font-size: 1.35em;
   cursor: pointer;
 }
 
@@ -843,7 +920,7 @@ button:disabled {
 }
 
 .brand-mark {
-  font-size: 2.8rem;
+  font-size: 2.8em;
   font-weight: 800;
   line-height: 1;
 }
@@ -881,7 +958,7 @@ button:disabled {
 
 .panel-caption {
   color: var(--text-muted);
-  font-size: 1.25rem;
+  font-size: 1.25em;
 }
 
 .outline-chip {
@@ -943,14 +1020,14 @@ button:disabled {
 
 .profile-row h2 {
   margin: 0 0 10px;
-  font-size: 1.35rem;
+  font-size: 1.35em;
   font-weight: 760;
 }
 
 .profile-row p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 1.2rem;
+  font-size: 1.2em;
 }
 
 .tool-section {
@@ -973,7 +1050,7 @@ button:disabled {
 }
 
 .accordion-item strong {
-  font-size: 1.55rem;
+  font-size: 1.5em;
   font-weight: 760;
 }
 
@@ -993,7 +1070,7 @@ button:disabled {
 .section-actions button {
   min-width: calc(58px * var(--ui-scale));
   height: calc(34px * var(--ui-scale));
-  font-size: 1.35rem;
+  font-size: 1.3em;
   font-weight: 700;
 }
 
@@ -1004,7 +1081,7 @@ button:disabled {
   gap: calc(10px * var(--ui-scale));
   min-height: calc(44px * var(--ui-scale));
   color: var(--text-soft);
-  font-size: 1.35rem;
+  font-size: 1.3em;
 }
 
 .white-balance-row button {
@@ -1013,7 +1090,7 @@ button:disabled {
 
 .white-balance-row .eyedropper {
   padding: 0;
-  font-size: 1.8rem;
+  font-size: 1.8em;
 }
 
 .slider-control {
@@ -1032,7 +1109,7 @@ button:disabled {
   align-items: baseline;
   justify-content: space-between;
   gap: calc(10px * var(--ui-scale));
-  font-size: 1.35rem;
+  font-size: 1.3em;
 }
 
 .slider-meta output {
@@ -1124,7 +1201,7 @@ button:disabled {
   justify-content: center;
   margin: calc(7px * var(--ui-scale)) 0;
   height: calc(38px * var(--ui-scale));
-  font-size: 1.35rem;
+  font-size: 1.3em;
 }
 
 .toggle-row {
@@ -1134,7 +1211,7 @@ button:disabled {
   width: 100%;
   min-height: calc(46px * var(--ui-scale));
   color: var(--text-soft);
-  font-size: 1.35rem;
+  font-size: 1.3em;
   cursor: pointer;
 }
 
