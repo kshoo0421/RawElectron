@@ -1,0 +1,6 @@
+app/.vite/
+app/native/build/
+app/node_modules/
+app/out/
+lib.third/opencv/.cache/
+lib.third/opencv/build/
