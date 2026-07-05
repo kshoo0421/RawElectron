@@ -1,6 +1,11 @@
-# RawElectron Native Engine Example
+# RawElectron Native Build
 
-This folder contains the first C++ connection point for the image engine.
+This folder contains the native build configuration and build output.
+The editable C++ engine source lives under:
+
+```text
+app/src/native-engine
+```
 
 ## Build
 
@@ -15,6 +20,47 @@ The build output is:
 app/native/build/Release/rawelectron_engine.node
 ```
 
+## Optional OpenCV Processing
+
+The native engine builds without OpenCV by default and passes images through.
+If OpenCV is available, `npm.cmd run build:native` enables it automatically and
+uses C++ for preview/export processing.
+
+For vendored project-local libraries, put OpenCV under:
+
+```text
+lib.third/opencv
+```
+
+The build script also checks:
+
+```text
+lib.third/opencv/build
+lib.third/opencv/install
+```
+
+On Windows, you can also point one of these environment variables at the OpenCV
+root or build folder:
+
+```powershell
+$env:RAWELECTRON_OPENCV_DIR = "C:\opencv\build"
+# or
+$env:OPENCV_DIR = "C:\opencv\build\x64\vc16"
+```
+
+The OpenCV root must contain:
+
+- `include/opencv2/opencv.hpp`
+- `opencv_world*.lib`, or `opencv_core*.lib`, `opencv_imgcodecs*.lib`, and
+  `opencv_imgproc*.lib`
+
+At runtime, the matching OpenCV DLL folder also needs to be on `PATH`, for
+example:
+
+```powershell
+$env:PATH = "C:\opencv\build\x64\vc16\bin;$env:PATH"
+```
+
 ## Runtime Flow
 
 ```text
@@ -22,6 +68,7 @@ React UI
 -> preload
 -> main process
 -> EngineWorker
+-> app/src/native-engine/addon.cpp
 -> rawelectron_engine.node
 ```
 
@@ -35,6 +82,10 @@ If the addon is missing, it falls back to the TypeScript stub.
 
 Both receive the same request shape used by `app/src/shared/engineTypes.ts`.
 
-The current C++ code reads `imagePath` and several `EditParams` values, then returns
-the original image buffer. Replace that buffer path with the real RAW/JPEG decoding
-and rendering pipeline when the engine is ready.
+With OpenCV enabled, preview rendering decodes the source image, applies a small
+set of edit parameters, resizes for preview, and returns a PNG buffer to the UI.
+Export rendering runs the same C++ edit path and writes to `outputPath`.
+
+This is the extension point for adding format-specific decoders such as LibRaw:
+decode RAW files into an OpenCV `cv::Mat`, then pass that matrix into the same
+processing/export path.

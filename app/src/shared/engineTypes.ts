@@ -72,7 +72,7 @@ export type EngineWorkerRenderRequest = {
 export type EngineWorkerRenderResponse = {
   requestId: number;
   imageUrl: string;
-  engine: 'stub' | 'cpp';
+  engine: 'stub' | 'cpp' | 'cpp-opencv';
 };
 
 export type EngineWorkerExportRequest = {

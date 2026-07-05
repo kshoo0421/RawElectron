@@ -1,13 +1,36 @@
 #include <node_api.h>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#ifdef RAWELECTRON_WITH_OPENCV
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+#endif
+
 namespace {
+
+#ifdef RAWELECTRON_WITH_OPENCV
+constexpr bool kOpenCvEnabled = true;
+#else
+constexpr bool kOpenCvEnabled = false;
+#endif
+
+struct EditParams {
+  double exposure = 0.0;
+  double contrast = 0.0;
+  double temperature = 0.0;
+  double tint = 0.0;
+  double vibrance = 0.0;
+  double saturation = 0.0;
+  double sharpening = 0.0;
+};
 
 void Check(napi_env env, napi_status status, const char* message) {
   if (status != napi_ok) {
@@ -110,25 +133,180 @@ std::string MimeTypeFromPath(const std::string& file_path) {
   return "application/octet-stream";
 }
 
-void TouchEditParams(napi_env env, napi_value request) {
+std::string ExtensionFromPath(const std::string& file_path) {
+  std::string extension = ".png";
+  const size_t dot = file_path.find_last_of('.');
+
+  if (dot != std::string::npos) {
+    extension = file_path.substr(dot);
+    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+  }
+
+  if (extension == ".jpg" || extension == ".jpeg" || extension == ".png" || extension == ".webp" ||
+      extension == ".bmp" || extension == ".tif" || extension == ".tiff") {
+    return extension;
+  }
+
+  return ".png";
+}
+
+EditParams ReadEditParams(napi_env env, napi_value request) {
+  EditParams params;
+
   if (!HasProperty(env, request, "params")) {
+    return params;
+  }
+
+  napi_value value = GetProperty(env, request, "params");
+  params.exposure = GetDoubleProperty(env, value, "exposure");
+  params.contrast = GetDoubleProperty(env, value, "contrast");
+  params.temperature = GetDoubleProperty(env, value, "temperature");
+  params.tint = GetDoubleProperty(env, value, "tint");
+  params.vibrance = GetDoubleProperty(env, value, "vibrance");
+  params.saturation = GetDoubleProperty(env, value, "saturation");
+  params.sharpening = GetDoubleProperty(env, value, "sharpening");
+
+  return params;
+}
+
+#ifdef RAWELECTRON_WITH_OPENCV
+double Clamp(double value, double min_value, double max_value) {
+  return std::max(min_value, std::min(max_value, value));
+}
+
+cv::Mat NormalizeImageForProcessing(const cv::Mat& source) {
+  cv::Mat normalized;
+
+  if (source.channels() == 1) {
+    cv::cvtColor(source, normalized, cv::COLOR_GRAY2BGR);
+  } else if (source.channels() == 4) {
+    cv::cvtColor(source, normalized, cv::COLOR_BGRA2BGR);
+  } else {
+    normalized = source;
+  }
+
+  if (normalized.depth() == CV_8U) {
+    return normalized;
+  }
+
+  double min_value = 0.0;
+  double max_value = 0.0;
+  cv::minMaxLoc(normalized, &min_value, &max_value);
+
+  const double scale = max_value > 255.0 ? 255.0 / max_value : 1.0;
+  cv::Mat eight_bit;
+  normalized.convertTo(eight_bit, CV_8U, scale);
+  return eight_bit;
+}
+
+void ResizeForPreview(cv::Mat& image, int32_t max_width, int32_t max_height) {
+  if (max_width <= 0 || max_height <= 0 || (image.cols <= max_width && image.rows <= max_height)) {
     return;
   }
 
-  napi_value params = GetProperty(env, request, "params");
-
-  // This is the C++ side contract point. These reads prove the JS EditParams
-  // struct is arriving in native code. Replace this section with the real
-  // pipeline parameter mapping when the image engine is implemented.
-  volatile double exposure = GetDoubleProperty(env, params, "exposure");
-  volatile double contrast = GetDoubleProperty(env, params, "contrast");
-  volatile double temperature = GetDoubleProperty(env, params, "temperature");
-  volatile double saturation = GetDoubleProperty(env, params, "saturation");
-  (void)exposure;
-  (void)contrast;
-  (void)temperature;
-  (void)saturation;
+  const double scale =
+      std::min(static_cast<double>(max_width) / image.cols, static_cast<double>(max_height) / image.rows);
+  cv::Mat resized;
+  cv::resize(image, resized, cv::Size(), scale, scale, cv::INTER_AREA);
+  image = resized;
 }
+
+cv::Mat ApplyOpenCvEdits(const cv::Mat& source, const EditParams& params) {
+  cv::Mat image = NormalizeImageForProcessing(source);
+
+  image.convertTo(image, CV_32F, 1.0 / 255.0);
+
+  const double exposure_gain = std::pow(2.0, Clamp(params.exposure, -5.0, 5.0));
+  const double contrast_gain = 1.0 + Clamp(params.contrast, -100.0, 100.0) / 100.0;
+  image = (image - 0.5) * contrast_gain + 0.5;
+  image *= exposure_gain;
+
+  std::vector<cv::Mat> channels;
+  cv::split(image, channels);
+
+  const double temperature_shift = Clamp(params.temperature, -100.0, 100.0) / 100.0 * 0.12;
+  const double tint_shift = Clamp(params.tint, -100.0, 100.0) / 100.0 * 0.08;
+
+  channels[0] -= temperature_shift;
+  channels[2] += temperature_shift;
+  channels[1] -= tint_shift;
+  cv::merge(channels, image);
+  cv::max(image, 0.0, image);
+  cv::min(image, 1.0, image);
+
+  const double saturation_gain =
+      1.0 + Clamp(params.saturation + params.vibrance * 0.6, -100.0, 100.0) / 100.0;
+
+  if (std::abs(saturation_gain - 1.0) > 0.001) {
+    cv::Mat hsv;
+    cv::cvtColor(image, hsv, cv::COLOR_BGR2HSV);
+    cv::split(hsv, channels);
+    channels[1] *= saturation_gain;
+    cv::min(channels[1], 1.0, channels[1]);
+    cv::merge(channels, hsv);
+    cv::cvtColor(hsv, image, cv::COLOR_HSV2BGR);
+  }
+
+  cv::max(image, 0.0, image);
+  cv::min(image, 1.0, image);
+  image.convertTo(image, CV_8U, 255.0);
+
+  if (params.sharpening > 0.0) {
+    cv::Mat blurred;
+    const double amount = Clamp(params.sharpening, 0.0, 150.0) / 150.0;
+    cv::GaussianBlur(image, blurred, cv::Size(0, 0), 1.2);
+    cv::addWeighted(image, 1.0 + amount, blurred, -amount, 0.0, image);
+  }
+
+  return image;
+}
+
+std::vector<unsigned char> EncodePreviewWithOpenCv(
+    const std::string& image_path,
+    const EditParams& params,
+    int32_t max_width,
+    int32_t max_height) {
+  cv::Mat source = cv::imread(image_path, cv::IMREAD_UNCHANGED);
+
+  if (source.empty()) {
+    throw std::runtime_error("OpenCV failed to decode input image");
+  }
+
+  ResizeForPreview(source, max_width, max_height);
+  cv::Mat edited = ApplyOpenCvEdits(source, params);
+
+  std::vector<unsigned char> encoded;
+  const std::vector<int> encode_params = {cv::IMWRITE_PNG_COMPRESSION, 3};
+
+  if (!cv::imencode(".png", edited, encoded, encode_params)) {
+    throw std::runtime_error("OpenCV failed to encode preview");
+  }
+
+  return encoded;
+}
+
+void ExportWithOpenCv(const std::string& image_path, const std::string& output_path, const EditParams& params) {
+  cv::Mat source = cv::imread(image_path, cv::IMREAD_UNCHANGED);
+
+  if (source.empty()) {
+    throw std::runtime_error("OpenCV failed to decode input image");
+  }
+
+  cv::Mat edited = ApplyOpenCvEdits(source, params);
+  const std::string extension = ExtensionFromPath(output_path);
+  std::vector<int> write_params;
+
+  if (extension == ".jpg" || extension == ".jpeg") {
+    write_params = {cv::IMWRITE_JPEG_QUALITY, 95};
+  } else if (extension == ".png") {
+    write_params = {cv::IMWRITE_PNG_COMPRESSION, 3};
+  }
+
+  if (!cv::imwrite(output_path, edited, write_params)) {
+    throw std::runtime_error("OpenCV failed to write output image");
+  }
+}
+#endif
 
 napi_value RenderPreview(napi_env env, napi_callback_info info) {
   size_t argc = 1;
@@ -144,9 +322,28 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
     napi_value request = args[0];
     const int32_t request_id = GetIntProperty(env, request, "requestId");
     const std::string image_path = GetStringProperty(env, request, "imagePath");
-    TouchEditParams(env, request);
+    const EditParams params = ReadEditParams(env, request);
 
-    std::vector<char> file_buffer = ReadBinaryFile(image_path);
+    std::vector<char> file_buffer;
+    std::string mime_type = MimeTypeFromPath(image_path);
+
+#ifdef RAWELECTRON_WITH_OPENCV
+    int32_t max_width = 1600;
+    int32_t max_height = 1200;
+
+    if (HasProperty(env, request, "preview")) {
+      napi_value preview = GetProperty(env, request, "preview");
+      max_width = GetIntProperty(env, preview, "maxWidth", max_width);
+      max_height = GetIntProperty(env, preview, "maxHeight", max_height);
+    }
+
+    std::vector<unsigned char> encoded_preview =
+        EncodePreviewWithOpenCv(image_path, params, max_width, max_height);
+    file_buffer.assign(encoded_preview.begin(), encoded_preview.end());
+    mime_type = "image/png";
+#else
+    file_buffer = ReadBinaryFile(image_path);
+#endif
 
     napi_value result;
     Check(env, napi_create_object(env, &result), "Failed to create result object");
@@ -156,7 +353,6 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
     Check(env, napi_set_named_property(env, result, "requestId", request_id_value), "Failed to set requestId");
 
     napi_value mime_type_value;
-    const std::string mime_type = MimeTypeFromPath(image_path);
     Check(
         env,
         napi_create_string_utf8(env, mime_type.c_str(), mime_type.size(), &mime_type_value),
@@ -164,7 +360,7 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
     Check(env, napi_set_named_property(env, result, "mimeType", mime_type_value), "Failed to set mimeType");
 
     napi_value engine_value;
-    Check(env, napi_create_string_utf8(env, "cpp", 3, &engine_value), "Failed to create engine name");
+    Check(env, napi_create_string_utf8(env, kOpenCvEnabled ? "cpp-opencv" : "cpp", NAPI_AUTO_LENGTH, &engine_value), "Failed to create engine name");
     Check(env, napi_set_named_property(env, result, "engine", engine_value), "Failed to set engine");
 
     napi_value image_buffer;
@@ -200,9 +396,13 @@ napi_value ExportRenderedImage(napi_env env, napi_callback_info info) {
     napi_value request = args[0];
     const std::string image_path = GetStringProperty(env, request, "imagePath");
     const std::string output_path = GetStringProperty(env, request, "outputPath");
-    TouchEditParams(env, request);
+    const EditParams params = ReadEditParams(env, request);
 
+#ifdef RAWELECTRON_WITH_OPENCV
+    ExportWithOpenCv(image_path, output_path, params);
+#else
     CopyBinaryFile(image_path, output_path);
+#endif
 
     napi_value result;
     Check(env, napi_create_object(env, &result), "Failed to create result object");
