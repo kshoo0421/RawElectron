@@ -1,6 +1,9 @@
-app/.vite/
-app/native/build/
-app/node_modules/
-app/out/
-lib.third/opencv/.cache/
-lib.third/opencv/build/
+.vs/
+
+apps/electron/.vite/
+apps/electron/native/build/
+apps/electron/node_modules/
+apps/electron/out/
+build/
+third_party/opencv/.cache/
+third_party/opencv/build/

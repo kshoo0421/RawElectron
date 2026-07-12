@@ -109,9 +109,12 @@ IPC에서는 이미지 데이터를 전달하지 않으며,
 ```
 RawElectron/
 
-├── app/                # Electron / React Application
-├── lib.third/          # Third-party Libraries
-├── doc/                # Project Documents
+├── apps/electron/      # Electron main / preload / React renderer
+├── engine/             # C++ engine modules
+├── third_party/        # Third-party libraries
+├── docs/               # Project documents
+├── tools/              # Development tools
+├── test/               # Unit and integration tests
 │
 │   ├── 00_Project/
 │   ├── 01_Requirements/

@@ -3,7 +3,7 @@ import platform
 import subprocess
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.join(ROOT, "app")
+APP_DIR = os.path.join(ROOT, "apps", "electron")
 IS_WINDOWS = platform.system() == "Windows"
 NPM = "npm.cmd" if IS_WINDOWS else "npm"
 
