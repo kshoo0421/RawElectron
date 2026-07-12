@@ -61,7 +61,7 @@ export type EditParams = {
 
 export type EngineWorkerRenderRequest = {
   requestId: number;
-  imagePath: string;
+  imageId: number;
   params: EditParams;
   preview: {
     maxWidth: number;
@@ -71,12 +71,18 @@ export type EngineWorkerRenderRequest = {
 
 export type EngineWorkerRenderResponse = {
   requestId: number;
-  imageUrl: string;
+  bitmap: {
+    width: number;
+    height: number;
+    stride: number;
+    pixelFormat: 'rgba8';
+    data: Uint8ClampedArray;
+  };
   engine: 'stub' | 'cpp' | 'cpp-opencv';
 };
 
 export type EngineWorkerExportRequest = {
-  imagePath: string;
+  imageId: number;
   outputPath: string;
   params: EditParams;
 };

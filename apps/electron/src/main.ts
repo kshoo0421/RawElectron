@@ -17,6 +17,7 @@ if (started) {
 const engineWorker = new EngineWorker();
 
 type ImageFile = {
+  id: number;
   name: string;
   path: string;
   url: string;
@@ -46,6 +47,7 @@ async function toImageFile(filePath: string): Promise<ImageFile> {
   const mimeType = imageMimeTypes[extension] ?? 'application/octet-stream';
 
   return {
+    id: await engineWorker.openImage(filePath),
     name: path.basename(filePath),
     path: filePath,
     url: `data:${mimeType};base64,${buffer.toString('base64')}`,
@@ -66,7 +68,8 @@ ipcMain.handle('images:open', async (): Promise<ImageFile[]> => {
   return Promise.all(result.filePaths.map(toImageFile));
 });
 
-ipcMain.handle('images:export', async (_event, sourcePath: string, params: EditParams) => {
+ipcMain.handle('images:export', async (_event, imageId: number, params: EditParams) => {
+  const sourcePath = engineWorker.getImagePath(imageId);
   const result = await dialog.showSaveDialog({
     title: 'Export image',
     defaultPath: path.basename(sourcePath),
@@ -78,7 +81,7 @@ ipcMain.handle('images:export', async (_event, sourcePath: string, params: EditP
   }
 
   await engineWorker.exportRenderedImage({
-    imagePath: sourcePath,
+    imageId,
     outputPath: result.filePath,
     params,
   });
@@ -133,6 +136,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('will-quit', () => {
+  void engineWorker.dispose();
 });
 
 app.on('activate', () => {

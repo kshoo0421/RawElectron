@@ -6,10 +6,20 @@ import { MakerRpm } from '@electron-forge/maker-rpm';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const nativeResourceCandidates = [
+  path.resolve(__dirname, 'native', 'build', 'Release', 'rawelectron_engine.node'),
+  path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin', 'opencv_core4100.dll'),
+  path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin', 'opencv_imgcodecs4100.dll'),
+  path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin', 'opencv_imgproc4100.dll'),
+].filter((resourcePath) => fs.existsSync(resourcePath));
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    extraResource: nativeResourceCandidates,
   },
   rebuildConfig: {},
   makers: [
@@ -33,6 +43,11 @@ const config: ForgeConfig = {
           entry: 'src/preload.ts',
           config: 'vite.preload.config.ts',
           target: 'preload',
+        },
+        {
+          entry: 'src/engine/engineHost.ts',
+          config: 'vite.main.config.ts',
+          target: 'main',
         },
       ],
       renderer: [

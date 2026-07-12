@@ -327,6 +327,10 @@ button:disabled {
   display: block;
 }
 
+.photo-canvas {
+  display: block;
+}
+
 .empty-viewer {
   display: grid;
   place-items: center;

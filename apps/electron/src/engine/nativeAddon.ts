@@ -8,26 +8,46 @@ import type {
 
 type NativeRenderResponse = {
   requestId: number;
-  imageBuffer: Buffer;
-  mimeType: string;
+  width: number;
+  height: number;
+  stride: number;
+  data: Uint8ClampedArray;
   engine: 'cpp' | 'cpp-opencv';
+};
+
+export type SharedBitmap = {
+  width: number;
+  height: number;
+  stride: number;
+  pixelFormat: 'rgba8';
+  data: Uint8ClampedArray;
 };
 
 type NativeEngineAddon = {
   getEngineInfo: () => { name: string; apiVersion: string; ready: boolean };
+  openImage: (path: string) => number;
+  closeImage: (imageId: number) => boolean;
+  createSharedBitmap: (width: number, height: number) => SharedBitmap;
+  fillSharedBitmap: (bitmap: SharedBitmap, rgba: number) => SharedBitmap;
+  checksumSharedBitmap: (bitmap: SharedBitmap) => number;
   renderPreview: (request: EngineWorkerRenderRequest) => NativeRenderResponse;
   exportRenderedImage: (request: EngineWorkerExportRequest) => { path: string };
 };
 
 const requireNative = createRequire(import.meta.url);
+const packagedResourcesPath = typeof process.resourcesPath === 'string'
+  ? process.resourcesPath
+  : null;
 
 const nativeRuntimeDllPaths = [
+  ...(packagedResourcesPath ? [packagedResourcesPath] : []),
   path.join(process.cwd(), '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin'),
   path.join(process.cwd(), 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin'),
   path.join(__dirname, '..', '..', '..', '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin'),
 ];
 
 const nativeAddonPaths = [
+  ...(packagedResourcesPath ? [path.join(packagedResourcesPath, 'rawelectron_engine.node')] : []),
   path.join(process.cwd(), 'native', 'build', 'Release', 'rawelectron_engine.node'),
   path.join(process.cwd(), 'native', 'build', 'Debug', 'rawelectron_engine.node'),
   path.join(__dirname, '..', '..', 'native', 'build', 'Release', 'rawelectron_engine.node'),

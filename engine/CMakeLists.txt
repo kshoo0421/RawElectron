@@ -15,6 +15,7 @@ rawelectron_module(rawelectron_engine Engine)
 rawelectron_module(rawelectron_ipc IPC)
 
 target_link_libraries(rawelectron_codec PUBLIC rawelectron_image_core)
+target_link_libraries(rawelectron_codec PRIVATE opencv_core opencv_imgcodecs opencv_imgproc)
 target_link_libraries(rawelectron_processing PUBLIC rawelectron_image_core)
 target_link_libraries(rawelectron_renderer PUBLIC rawelectron_image_core)
 target_link_libraries(rawelectron_engine PUBLIC

@@ -25,7 +25,7 @@ class IRenderer {
  public:
   virtual ~IRenderer() = default;
   virtual image_core::Status render_preview(
-      image_core::ImageId image_id,
+      const image_core::Bitmap& input,
       image_core::Size maximum_size,
       image_core::Bitmap& output) = 0;
 };

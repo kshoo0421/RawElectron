@@ -4,7 +4,7 @@
 
 namespace rawelectron::processing {
 
-class StubProcessor final : public interfaces::IProcessor {
+class BasicProcessor final : public interfaces::IProcessor {
  public:
   image_core::Status process(
       const image_core::Bitmap& input,

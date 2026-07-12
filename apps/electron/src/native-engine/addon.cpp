@@ -1,28 +1,15 @@
 #include <node_api.h>
 
 #include <algorithm>
-#include <cmath>
-#include <fstream>
-#include <sstream>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <rawelectron/ipc/engine_bridge.hpp>
 
-#ifdef RAWELECTRON_WITH_OPENCV
-#include <opencv2/core.hpp>
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
-#endif
-
 namespace {
-
-#ifdef RAWELECTRON_WITH_OPENCV
 constexpr bool kOpenCvEnabled = true;
-#else
-constexpr bool kOpenCvEnabled = false;
-#endif
 
 struct EditParams {
   double exposure = 0.0;
@@ -32,6 +19,14 @@ struct EditParams {
   double vibrance = 0.0;
   double saturation = 0.0;
   double sharpening = 0.0;
+};
+
+struct SharedBitmapData {
+  std::uint8_t* data = nullptr;
+  size_t byte_length = 0;
+  int32_t width = 0;
+  int32_t height = 0;
+  int32_t stride = 0;
 };
 
 void Check(napi_env env, napi_status status, const char* message) {
@@ -58,10 +53,12 @@ std::string GetStringProperty(napi_env env, napi_value object, const char* name)
   Check(env, napi_get_value_string_utf8(env, value, nullptr, 0, &length), "Failed to measure string");
 
   std::string result(length, '\0');
+  result.resize(length + 1);
   Check(
       env,
-      napi_get_value_string_utf8(env, value, result.data(), result.size() + 1, &length),
+      napi_get_value_string_utf8(env, value, result.data(), result.size(), &length),
       "Failed to read string");
+  result.resize(length);
   return result;
 }
 
@@ -85,71 +82,55 @@ double GetDoubleProperty(napi_env env, napi_value object, const char* name, doub
   return result;
 }
 
-std::vector<char> ReadBinaryFile(const std::string& file_path) {
-  std::ifstream stream(file_path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("Failed to open input image");
+rawelectron::image_core::ImageId GetImageIdProperty(napi_env env, napi_value object) {
+  int64_t value = 0;
+  Check(env, napi_get_value_int64(env, GetProperty(env, object, "imageId"), &value), "Failed to read imageId");
+  if (value <= 0) {
+    throw std::invalid_argument("imageId must be positive");
   }
-
-  stream.seekg(0, std::ios::end);
-  std::streamoff size = stream.tellg();
-  stream.seekg(0, std::ios::beg);
-
-  if (size < 0) {
-    throw std::runtime_error("Failed to measure input image");
-  }
-
-  std::vector<char> buffer(static_cast<size_t>(size));
-  stream.read(buffer.data(), size);
-  return buffer;
+  return static_cast<rawelectron::image_core::ImageId>(value);
 }
 
-void CopyBinaryFile(const std::string& source_path, const std::string& output_path) {
-  std::ifstream source(source_path, std::ios::binary);
-  if (!source) {
-    throw std::runtime_error("Failed to open source image");
+void ThrowIfFailed(napi_env, const rawelectron::image_core::Status& status) {
+  if (!status.ok()) {
+    throw std::runtime_error(status.message);
   }
-
-  std::ofstream output(output_path, std::ios::binary);
-  if (!output) {
-    throw std::runtime_error("Failed to open output image");
-  }
-
-  output << source.rdbuf();
 }
 
-std::string MimeTypeFromPath(const std::string& file_path) {
-  std::string extension;
-  const size_t dot = file_path.find_last_of('.');
-  if (dot != std::string::npos) {
-    extension = file_path.substr(dot);
-    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+SharedBitmapData GetSharedBitmapData(napi_env env, napi_value bitmap) {
+  SharedBitmapData result;
+  result.width = GetIntProperty(env, bitmap, "width");
+  result.height = GetIntProperty(env, bitmap, "height");
+  result.stride = GetIntProperty(env, bitmap, "stride");
+
+  if (result.width <= 0 || result.height <= 0 || result.stride < result.width * 4) {
+    throw std::invalid_argument("Invalid shared bitmap dimensions");
   }
 
-  if (extension == ".jpg" || extension == ".jpeg") return "image/jpeg";
-  if (extension == ".png") return "image/png";
-  if (extension == ".webp") return "image/webp";
-  if (extension == ".bmp") return "image/bmp";
-  if (extension == ".gif") return "image/gif";
-  if (extension == ".tif" || extension == ".tiff") return "image/tiff";
-  return "application/octet-stream";
-}
+  napi_value data_value = GetProperty(env, bitmap, "data");
+  napi_typedarray_type type;
+  size_t element_count = 0;
+  void* data = nullptr;
+  napi_value array_buffer;
+  size_t byte_offset = 0;
+  Check(
+      env,
+      napi_get_typedarray_info(
+          env, data_value, &type, &element_count, &data, &array_buffer, &byte_offset),
+      "Shared bitmap data must be a Uint8Array");
 
-std::string ExtensionFromPath(const std::string& file_path) {
-  std::string extension = ".png";
-  const size_t dot = file_path.find_last_of('.');
-
-  if (dot != std::string::npos) {
-    extension = file_path.substr(dot);
-    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+  if (type != napi_uint8_array && type != napi_uint8_clamped_array) {
+    throw std::invalid_argument("Shared bitmap data must be a Uint8Array");
   }
 
-  if (extension == ".jpg" || extension == ".jpeg" || extension == ".png" || extension == ".webp" ||
-      extension == ".bmp" || extension == ".tif" || extension == ".tiff") {
-    return extension;
+  const size_t required = static_cast<size_t>(result.stride) * static_cast<size_t>(result.height);
+  if (element_count < required) {
+    throw std::invalid_argument("Shared bitmap buffer is smaller than its dimensions");
   }
 
-  return ".png";
+  result.data = static_cast<std::uint8_t*>(data);
+  result.byte_length = element_count;
+  return result;
 }
 
 EditParams ReadEditParams(napi_env env, napi_value request) {
@@ -171,145 +152,6 @@ EditParams ReadEditParams(napi_env env, napi_value request) {
   return params;
 }
 
-#ifdef RAWELECTRON_WITH_OPENCV
-double Clamp(double value, double min_value, double max_value) {
-  return std::max(min_value, std::min(max_value, value));
-}
-
-cv::Mat NormalizeImageForProcessing(const cv::Mat& source) {
-  cv::Mat normalized;
-
-  if (source.channels() == 1) {
-    cv::cvtColor(source, normalized, cv::COLOR_GRAY2BGR);
-  } else if (source.channels() == 4) {
-    cv::cvtColor(source, normalized, cv::COLOR_BGRA2BGR);
-  } else {
-    normalized = source;
-  }
-
-  if (normalized.depth() == CV_8U) {
-    return normalized;
-  }
-
-  double min_value = 0.0;
-  double max_value = 0.0;
-  cv::minMaxLoc(normalized, &min_value, &max_value);
-
-  const double scale = max_value > 255.0 ? 255.0 / max_value : 1.0;
-  cv::Mat eight_bit;
-  normalized.convertTo(eight_bit, CV_8U, scale);
-  return eight_bit;
-}
-
-void ResizeForPreview(cv::Mat& image, int32_t max_width, int32_t max_height) {
-  if (max_width <= 0 || max_height <= 0 || (image.cols <= max_width && image.rows <= max_height)) {
-    return;
-  }
-
-  const double scale =
-      std::min(static_cast<double>(max_width) / image.cols, static_cast<double>(max_height) / image.rows);
-  cv::Mat resized;
-  cv::resize(image, resized, cv::Size(), scale, scale, cv::INTER_AREA);
-  image = resized;
-}
-
-cv::Mat ApplyOpenCvEdits(const cv::Mat& source, const EditParams& params) {
-  cv::Mat image = NormalizeImageForProcessing(source);
-
-  image.convertTo(image, CV_32F, 1.0 / 255.0);
-
-  const double exposure_gain = std::pow(2.0, Clamp(params.exposure, -5.0, 5.0));
-  const double contrast_gain = 1.0 + Clamp(params.contrast, -100.0, 100.0) / 100.0;
-  image = (image - 0.5) * contrast_gain + 0.5;
-  image *= exposure_gain;
-
-  std::vector<cv::Mat> channels;
-  cv::split(image, channels);
-
-  const double temperature_shift = Clamp(params.temperature, -100.0, 100.0) / 100.0 * 0.12;
-  const double tint_shift = Clamp(params.tint, -100.0, 100.0) / 100.0 * 0.08;
-
-  channels[0] -= temperature_shift;
-  channels[2] += temperature_shift;
-  channels[1] -= tint_shift;
-  cv::merge(channels, image);
-  cv::max(image, 0.0, image);
-  cv::min(image, 1.0, image);
-
-  const double saturation_gain =
-      1.0 + Clamp(params.saturation + params.vibrance * 0.6, -100.0, 100.0) / 100.0;
-
-  if (std::abs(saturation_gain - 1.0) > 0.001) {
-    cv::Mat hsv;
-    cv::cvtColor(image, hsv, cv::COLOR_BGR2HSV);
-    cv::split(hsv, channels);
-    channels[1] *= saturation_gain;
-    cv::min(channels[1], 1.0, channels[1]);
-    cv::merge(channels, hsv);
-    cv::cvtColor(hsv, image, cv::COLOR_HSV2BGR);
-  }
-
-  cv::max(image, 0.0, image);
-  cv::min(image, 1.0, image);
-  image.convertTo(image, CV_8U, 255.0);
-
-  if (params.sharpening > 0.0) {
-    cv::Mat blurred;
-    const double amount = Clamp(params.sharpening, 0.0, 150.0) / 150.0;
-    cv::GaussianBlur(image, blurred, cv::Size(0, 0), 1.2);
-    cv::addWeighted(image, 1.0 + amount, blurred, -amount, 0.0, image);
-  }
-
-  return image;
-}
-
-std::vector<unsigned char> EncodePreviewWithOpenCv(
-    const std::string& image_path,
-    const EditParams& params,
-    int32_t max_width,
-    int32_t max_height) {
-  cv::Mat source = cv::imread(image_path, cv::IMREAD_UNCHANGED);
-
-  if (source.empty()) {
-    throw std::runtime_error("OpenCV failed to decode input image");
-  }
-
-  ResizeForPreview(source, max_width, max_height);
-  cv::Mat edited = ApplyOpenCvEdits(source, params);
-
-  std::vector<unsigned char> encoded;
-  const std::vector<int> encode_params = {cv::IMWRITE_PNG_COMPRESSION, 3};
-
-  if (!cv::imencode(".png", edited, encoded, encode_params)) {
-    throw std::runtime_error("OpenCV failed to encode preview");
-  }
-
-  return encoded;
-}
-
-void ExportWithOpenCv(const std::string& image_path, const std::string& output_path, const EditParams& params) {
-  cv::Mat source = cv::imread(image_path, cv::IMREAD_UNCHANGED);
-
-  if (source.empty()) {
-    throw std::runtime_error("OpenCV failed to decode input image");
-  }
-
-  cv::Mat edited = ApplyOpenCvEdits(source, params);
-  const std::string extension = ExtensionFromPath(output_path);
-  std::vector<int> write_params;
-
-  if (extension == ".jpg" || extension == ".jpeg") {
-    write_params = {cv::IMWRITE_JPEG_QUALITY, 95};
-  } else if (extension == ".png") {
-    write_params = {cv::IMWRITE_PNG_COMPRESSION, 3};
-  }
-
-  if (!cv::imwrite(output_path, edited, write_params)) {
-    throw std::runtime_error("OpenCV failed to write output image");
-  }
-}
-#endif
-
 napi_value RenderPreview(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
@@ -323,13 +165,14 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
   try {
     napi_value request = args[0];
     const int32_t request_id = GetIntProperty(env, request, "requestId");
-    const std::string image_path = GetStringProperty(env, request, "imagePath");
+    const auto image_id = GetImageIdProperty(env, request);
     const EditParams params = ReadEditParams(env, request);
+    rawelectron::image_core::Adjustment engine_adjustment;
+    engine_adjustment.exposure = params.exposure;
+    engine_adjustment.contrast = params.contrast;
+    engine_adjustment.saturation = params.saturation;
+    ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, engine_adjustment));
 
-    std::vector<char> file_buffer;
-    std::string mime_type = MimeTypeFromPath(image_path);
-
-#ifdef RAWELECTRON_WITH_OPENCV
     int32_t max_width = 1600;
     int32_t max_height = 1200;
 
@@ -339,13 +182,14 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
       max_height = GetIntProperty(env, preview, "maxHeight", max_height);
     }
 
-    std::vector<unsigned char> encoded_preview =
-        EncodePreviewWithOpenCv(image_path, params, max_width, max_height);
-    file_buffer.assign(encoded_preview.begin(), encoded_preview.end());
-    mime_type = "image/png";
-#else
-    file_buffer = ReadBinaryFile(image_path);
-#endif
+    rawelectron::image_core::Bitmap bitmap;
+    ThrowIfFailed(
+        env,
+        rawelectron::ipc::render_preview(
+            image_id,
+            {static_cast<std::uint32_t>(std::max(0, max_width)),
+             static_cast<std::uint32_t>(std::max(0, max_height))},
+            bitmap));
 
     napi_value result;
     Check(env, napi_create_object(env, &result), "Failed to create result object");
@@ -354,28 +198,34 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
     Check(env, napi_create_int32(env, request_id, &request_id_value), "Failed to create requestId");
     Check(env, napi_set_named_property(env, result, "requestId", request_id_value), "Failed to set requestId");
 
-    napi_value mime_type_value;
-    Check(
-        env,
-        napi_create_string_utf8(env, mime_type.c_str(), mime_type.size(), &mime_type_value),
-        "Failed to create mimeType");
-    Check(env, napi_set_named_property(env, result, "mimeType", mime_type_value), "Failed to set mimeType");
-
     napi_value engine_value;
     Check(env, napi_create_string_utf8(env, kOpenCvEnabled ? "cpp-opencv" : "cpp", NAPI_AUTO_LENGTH, &engine_value), "Failed to create engine name");
     Check(env, napi_set_named_property(env, result, "engine", engine_value), "Failed to set engine");
 
-    napi_value image_buffer;
+    napi_value width_value;
+    Check(env, napi_create_uint32(env, bitmap.size.width, &width_value), "Failed to create bitmap width");
+    Check(env, napi_set_named_property(env, result, "width", width_value), "Failed to set bitmap width");
+    napi_value height_value;
+    Check(env, napi_create_uint32(env, bitmap.size.height, &height_value), "Failed to create bitmap height");
+    Check(env, napi_set_named_property(env, result, "height", height_value), "Failed to set bitmap height");
+    napi_value stride_value;
+    Check(env, napi_create_uint32(env, bitmap.size.width * 4, &stride_value), "Failed to create bitmap stride");
+    Check(env, napi_set_named_property(env, result, "stride", stride_value), "Failed to set bitmap stride");
+
+    void* pixel_storage = nullptr;
+    napi_value array_buffer;
     Check(
         env,
-        napi_create_buffer_copy(
-            env,
-            file_buffer.size(),
-            file_buffer.empty() ? nullptr : file_buffer.data(),
-            nullptr,
-            &image_buffer),
-        "Failed to create image buffer");
-    Check(env, napi_set_named_property(env, result, "imageBuffer", image_buffer), "Failed to set imageBuffer");
+        napi_create_arraybuffer(env, bitmap.pixels.size(), &pixel_storage, &array_buffer),
+        "Failed to create bitmap ArrayBuffer");
+    std::copy(bitmap.pixels.begin(), bitmap.pixels.end(), static_cast<std::uint8_t*>(pixel_storage));
+    napi_value pixel_view;
+    Check(
+        env,
+        napi_create_typedarray(
+            env, napi_uint8_clamped_array, bitmap.pixels.size(), array_buffer, 0, &pixel_view),
+        "Failed to create bitmap pixel view");
+    Check(env, napi_set_named_property(env, result, "data", pixel_view), "Failed to set bitmap data");
 
     return result;
   } catch (const std::exception& error) {
@@ -396,15 +246,15 @@ napi_value ExportRenderedImage(napi_env env, napi_callback_info info) {
 
   try {
     napi_value request = args[0];
-    const std::string image_path = GetStringProperty(env, request, "imagePath");
+    const auto image_id = GetImageIdProperty(env, request);
     const std::string output_path = GetStringProperty(env, request, "outputPath");
     const EditParams params = ReadEditParams(env, request);
-
-#ifdef RAWELECTRON_WITH_OPENCV
-    ExportWithOpenCv(image_path, output_path, params);
-#else
-    CopyBinaryFile(image_path, output_path);
-#endif
+    rawelectron::image_core::Adjustment engine_adjustment;
+    engine_adjustment.exposure = params.exposure;
+    engine_adjustment.contrast = params.contrast;
+    engine_adjustment.saturation = params.saturation;
+    ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, engine_adjustment));
+    ThrowIfFailed(env, rawelectron::ipc::export_image(image_id, output_path));
 
     napi_value result;
     Check(env, napi_create_object(env, &result), "Failed to create result object");
@@ -445,7 +295,190 @@ napi_value GetEngineInfo(napi_env env, napi_callback_info) {
   return result;
 }
 
+napi_value OpenImage(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  Check(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "Failed to read openImage arguments");
+  if (argc < 1) {
+    napi_throw_type_error(env, nullptr, "openImage requires an image path");
+    return nullptr;
+  }
+
+  try {
+    size_t length = 0;
+    Check(env, napi_get_value_string_utf8(env, args[0], nullptr, 0, &length), "Failed to measure image path");
+    std::string path(length + 1, '\0');
+    Check(env, napi_get_value_string_utf8(env, args[0], path.data(), path.size(), &length), "Failed to read image path");
+    path.resize(length);
+    rawelectron::image_core::ImageId image_id = 0;
+    ThrowIfFailed(env, rawelectron::ipc::open_image(path, image_id));
+    napi_value result;
+    Check(env, napi_create_int64(env, static_cast<int64_t>(image_id), &result), "Failed to create imageId");
+    return result;
+  } catch (const std::exception& error) {
+    napi_throw_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
+
+napi_value CloseImage(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  Check(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "Failed to read closeImage arguments");
+  if (argc < 1) {
+    napi_throw_type_error(env, nullptr, "closeImage requires an imageId");
+    return nullptr;
+  }
+
+  int64_t value = 0;
+  Check(env, napi_get_value_int64(env, args[0], &value), "Failed to read imageId");
+  const auto status = rawelectron::ipc::close_image(static_cast<rawelectron::image_core::ImageId>(value));
+  if (!status.ok()) {
+    napi_throw_error(env, nullptr, status.message.c_str());
+    return nullptr;
+  }
+  napi_value result;
+  Check(env, napi_get_boolean(env, true, &result), "Failed to create close result");
+  return result;
+}
+
+napi_value CreateSharedBitmap(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  Check(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "Failed to read bitmap dimensions");
+
+  if (argc < 2) {
+    napi_throw_type_error(env, nullptr, "createSharedBitmap requires width and height");
+    return nullptr;
+  }
+
+  int32_t width = 0;
+  int32_t height = 0;
+  Check(env, napi_get_value_int32(env, args[0], &width), "Invalid bitmap width");
+  Check(env, napi_get_value_int32(env, args[1], &height), "Invalid bitmap height");
+
+  if (width <= 0 || height <= 0 || width > 32768 || height > 32768) {
+    napi_throw_range_error(env, nullptr, "Bitmap dimensions are out of range");
+    return nullptr;
+  }
+
+  const size_t stride = static_cast<size_t>(width) * 4;
+  if (static_cast<size_t>(height) > SIZE_MAX / stride) {
+    napi_throw_range_error(env, nullptr, "Bitmap allocation is too large");
+    return nullptr;
+  }
+
+  const size_t byte_length = stride * static_cast<size_t>(height);
+  void* pixels = nullptr;
+  napi_value array_buffer;
+  Check(env, napi_create_arraybuffer(env, byte_length, &pixels, &array_buffer), "Failed to allocate bitmap buffer");
+  std::fill_n(static_cast<std::uint8_t*>(pixels), byte_length, 0);
+
+  napi_value data;
+  Check(
+      env,
+      napi_create_typedarray(env, napi_uint8_clamped_array, byte_length, array_buffer, 0, &data),
+      "Failed to create bitmap view");
+
+  napi_value result;
+  Check(env, napi_create_object(env, &result), "Failed to create shared bitmap");
+
+  napi_value value;
+  Check(env, napi_create_int32(env, width, &value), "Failed to create width");
+  Check(env, napi_set_named_property(env, result, "width", value), "Failed to set width");
+  Check(env, napi_create_int32(env, height, &value), "Failed to create height");
+  Check(env, napi_set_named_property(env, result, "height", value), "Failed to set height");
+  Check(env, napi_create_int64(env, static_cast<int64_t>(stride), &value), "Failed to create stride");
+  Check(env, napi_set_named_property(env, result, "stride", value), "Failed to set stride");
+  Check(env, napi_create_string_utf8(env, "rgba8", NAPI_AUTO_LENGTH, &value), "Failed to create pixel format");
+  Check(env, napi_set_named_property(env, result, "pixelFormat", value), "Failed to set pixel format");
+  Check(env, napi_set_named_property(env, result, "data", data), "Failed to set bitmap data");
+  return result;
+}
+
+napi_value FillSharedBitmap(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  Check(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "Failed to read fill arguments");
+
+  if (argc < 2) {
+    napi_throw_type_error(env, nullptr, "fillSharedBitmap requires a bitmap and packed RGBA color");
+    return nullptr;
+  }
+
+  try {
+    const SharedBitmapData bitmap = GetSharedBitmapData(env, args[0]);
+    uint32_t rgba = 0;
+    Check(env, napi_get_value_uint32(env, args[1], &rgba), "Invalid packed RGBA color");
+    const std::uint8_t red = static_cast<std::uint8_t>((rgba >> 24) & 0xff);
+    const std::uint8_t green = static_cast<std::uint8_t>((rgba >> 16) & 0xff);
+    const std::uint8_t blue = static_cast<std::uint8_t>((rgba >> 8) & 0xff);
+    const std::uint8_t alpha = static_cast<std::uint8_t>(rgba & 0xff);
+
+    for (int32_t y = 0; y < bitmap.height; ++y) {
+      std::uint8_t* row = bitmap.data + static_cast<size_t>(y) * bitmap.stride;
+      for (int32_t x = 0; x < bitmap.width; ++x) {
+        std::uint8_t* pixel = row + static_cast<size_t>(x) * 4;
+        pixel[0] = red;
+        pixel[1] = green;
+        pixel[2] = blue;
+        pixel[3] = alpha;
+      }
+    }
+    return args[0];
+  } catch (const std::exception& error) {
+    napi_throw_type_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
+
+napi_value ChecksumSharedBitmap(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  Check(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "Failed to read checksum arguments");
+
+  if (argc < 1) {
+    napi_throw_type_error(env, nullptr, "checksumSharedBitmap requires a bitmap");
+    return nullptr;
+  }
+
+  try {
+    const SharedBitmapData bitmap = GetSharedBitmapData(env, args[0]);
+    uint32_t checksum = 2166136261u;
+    const size_t visible_bytes = static_cast<size_t>(bitmap.width) * 4;
+    for (int32_t y = 0; y < bitmap.height; ++y) {
+      const std::uint8_t* row = bitmap.data + static_cast<size_t>(y) * bitmap.stride;
+      for (size_t index = 0; index < visible_bytes; ++index) {
+        checksum = (checksum ^ row[index]) * 16777619u;
+      }
+    }
+
+    napi_value result;
+    Check(env, napi_create_uint32(env, checksum, &result), "Failed to create bitmap checksum");
+    return result;
+  } catch (const std::exception& error) {
+    napi_throw_type_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
+
 napi_value Init(napi_env env, napi_value exports) {
+  napi_property_descriptor engine_properties[] = {
+      {"openImage", nullptr, OpenImage, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"closeImage", nullptr, CloseImage, nullptr, nullptr, nullptr, napi_default, nullptr},
+  };
+  Check(env, napi_define_properties(env, exports, 2, engine_properties), "Failed to export engine functions");
+
+  napi_property_descriptor bitmap_properties[] = {
+      {"createSharedBitmap", nullptr, CreateSharedBitmap, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"fillSharedBitmap", nullptr, FillSharedBitmap, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"checksumSharedBitmap", nullptr, ChecksumSharedBitmap, nullptr, nullptr, nullptr, napi_default, nullptr},
+  };
+  Check(
+      env,
+      napi_define_properties(env, exports, 3, bitmap_properties),
+      "Failed to export shared bitmap functions");
+
   napi_value get_engine_info;
   Check(
       env,

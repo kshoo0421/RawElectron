@@ -4,10 +4,10 @@
 
 namespace rawelectron::renderer {
 
-class StubRenderer final : public interfaces::IRenderer {
+class ProxyRenderer final : public interfaces::IRenderer {
  public:
   image_core::Status render_preview(
-      image_core::ImageId image_id,
+      const image_core::Bitmap& input,
       image_core::Size maximum_size,
       image_core::Bitmap& output) override;
 };

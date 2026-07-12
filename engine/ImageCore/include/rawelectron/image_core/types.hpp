@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,16 @@ struct Bitmap {
   Size size;
   PixelFormat format = PixelFormat::unknown;
   std::vector<std::uint8_t> pixels;
+};
+
+// Non-owning view used at the JS/C++ boundary. The JavaScript ArrayBuffer owns
+// the storage; native calls may use this view only for the duration of a call.
+struct BitmapView {
+  Size size;
+  PixelFormat format = PixelFormat::rgba8;
+  std::uint32_t stride = 0;
+  std::uint8_t* data = nullptr;
+  std::size_t byte_length = 0;
 };
 
 struct Adjustment {

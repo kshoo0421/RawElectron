@@ -8,6 +8,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(RAWELECTRON_BUILD_TESTS "Build engine tests" ON)
 
+find_package(OpenCV REQUIRED CONFIG
+  PATHS "${CMAKE_SOURCE_DIR}/third_party/opencv/install"
+  NO_DEFAULT_PATH
+  COMPONENTS core imgcodecs imgproc
+)
+
 add_subdirectory(engine)
 
 if(RAWELECTRON_BUILD_TESTS)

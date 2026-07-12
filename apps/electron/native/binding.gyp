@@ -5,12 +5,18 @@
       "target_name": "rawelectron_engine",
       "sources": [
         "../src/native-engine/addon.cpp",
+        "../../../engine/Codec/src/module_anchor.cpp",
+        "../../../engine/Processing/src/module_anchor.cpp",
+        "../../../engine/Renderer/src/module_anchor.cpp",
         "../../../engine/Engine/src/module_anchor.cpp",
         "../../../engine/IPC/src/module_anchor.cpp"
       ],
       "include_dirs": [
         "../../../engine/Interfaces/include",
         "../../../engine/ImageCore/include",
+        "../../../engine/Codec/include",
+        "../../../engine/Processing/include",
+        "../../../engine/Renderer/include",
         "../../../engine/Engine/include",
         "../../../engine/IPC/include"
       ],

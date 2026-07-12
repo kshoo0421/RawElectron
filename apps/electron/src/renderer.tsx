@@ -76,17 +76,20 @@ type ToolSection = {
 };
 
 type ImageFile = {
+  id: number;
   name: string;
   path: string;
   url: string;
 };
+
+type PreviewBitmap = EngineWorkerRenderResponse['bitmap'];
 
 declare global {
   interface Window {
     rawElectron: {
       openImages: () => Promise<ImageFile[]>;
       exportImage: (
-        sourcePath: string,
+        imageId: number,
         params: EditParams,
       ) => Promise<{ canceled: boolean; path?: string }>;
       engineWorker: {
@@ -376,7 +379,7 @@ function App() {
   const [activeTool, setActiveTool] = useState<ActiveTool>('edit');
   const [images, setImages] = useState<ImageFile[]>([]);
   const [selectedImagePath, setSelectedImagePath] = useState<string | null>(null);
-  const [renderedPreviewUrl, setRenderedPreviewUrl] = useState<string | null>(null);
+  const [renderedPreviewBitmap, setRenderedPreviewBitmap] = useState<PreviewBitmap | null>(null);
   const engineRequestId = useRef(0);
   const [sections, setSections] = useState<ToolSection[]>(editSections);
   const [maskControls, setMaskControls] = useState<ToolSection[]>(maskSections);
@@ -470,7 +473,7 @@ function App() {
 
   useEffect(() => {
     if (!selectedImage) {
-      setRenderedPreviewUrl(null);
+      setRenderedPreviewBitmap(null);
       return undefined;
     }
 
@@ -479,7 +482,7 @@ function App() {
     const timeoutId = window.setTimeout(async () => {
       const response = await window.rawElectron.engineWorker.renderPreview({
         requestId,
-        imagePath: selectedImage.path,
+        imageId: selectedImage.id,
         params: editParams,
         preview: {
           maxWidth: 1600,
@@ -488,7 +491,7 @@ function App() {
       });
 
       if (response.requestId === engineRequestId.current) {
-        setRenderedPreviewUrl(response.imageUrl);
+        setRenderedPreviewBitmap(response.bitmap);
       }
     }, 80);
 
@@ -515,7 +518,7 @@ function App() {
       return;
     }
 
-    await window.rawElectron.exportImage(selectedImage.path, editParams);
+    await window.rawElectron.exportImage(selectedImage.id, editParams);
   };
 
   return (
@@ -548,7 +551,7 @@ function App() {
         <Viewer
           images={images}
           selectedImage={selectedImage}
-          renderedPreviewUrl={renderedPreviewUrl}
+          renderedPreviewBitmap={renderedPreviewBitmap}
           previewFilter={previewFilter}
           activeTool={activeTool}
           selectedRatio={selectedRatio}
@@ -763,10 +766,33 @@ function SettingsPopover({
   );
 }
 
+function BitmapCanvas({ bitmap, label }: { bitmap: PreviewBitmap; label: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || bitmap.pixelFormat !== 'rgba8' || bitmap.stride !== bitmap.width * 4) {
+      return;
+    }
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return;
+    }
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const pixels = bitmap.data instanceof Uint8ClampedArray
+      ? bitmap.data
+      : new Uint8ClampedArray(bitmap.data);
+    context.putImageData(new ImageData(pixels, bitmap.width, bitmap.height), 0, 0);
+  }, [bitmap]);
+
+  return <canvas ref={canvasRef} className="photo-img photo-canvas" role="img" aria-label={label} />;
+}
+
 function Viewer({
   images,
   selectedImage,
-  renderedPreviewUrl,
+  renderedPreviewBitmap,
   previewFilter,
   activeTool,
   selectedRatio,
@@ -775,7 +801,7 @@ function Viewer({
 }: {
   images: ImageFile[];
   selectedImage: ImageFile | null;
-  renderedPreviewUrl: string | null;
+  renderedPreviewBitmap: PreviewBitmap | null;
   previewFilter: React.CSSProperties;
   activeTool: ActiveTool;
   selectedRatio: string;
@@ -790,7 +816,11 @@ function Viewer({
         <div className={`photo-frame ${activeTool === 'crop' && selectedImage ? 'crop-active' : ''}`}>
           {selectedImage ? (
             <div className="sample-photo loaded-photo" style={previewFilter} role="img" aria-label={selectedImage.name}>
-              <img className="photo-img" src={renderedPreviewUrl ?? selectedImage.url} alt={selectedImage.name} />
+              {renderedPreviewBitmap ? (
+                <BitmapCanvas bitmap={renderedPreviewBitmap} label={selectedImage.name} />
+              ) : (
+                <img className="photo-img" src={selectedImage.url} alt={selectedImage.name} />
+              )}
               {activeTool === 'mask' && <div className="mask-overlay" />}
             </div>
           ) : (
