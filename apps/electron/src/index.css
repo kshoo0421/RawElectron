@@ -331,6 +331,31 @@ button:disabled {
   display: block;
 }
 
+.preview-loading,
+.thumb-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--muted-text, #9ca3af);
+  background: #17191d;
+}
+
+.preview-loading {
+  width: 100%;
+  height: 100%;
+}
+
+.preview-error {
+  color: #fca5a5;
+  padding: 24px;
+  text-align: center;
+}
+
+.thumb-placeholder {
+  width: 100%;
+  height: 100%;
+  font-size: 10px;
+}
+
 .empty-viewer {
   display: grid;
   place-items: center;

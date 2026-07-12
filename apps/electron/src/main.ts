@@ -1,5 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
-import { readFile } from 'node:fs/promises';
+import { app, BrowserWindow, dialog, ipcMain, MessageChannelMain } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { EngineWorker } from './engine/engineWorker';
@@ -19,8 +18,9 @@ const engineWorker = new EngineWorker();
 type ImageFile = {
   id: number;
   name: string;
-  path: string;
-  url: string;
+  width: number;
+  height: number;
+  pixelFormat: 'rgba8';
 };
 
 const imageFilters = [
@@ -30,27 +30,15 @@ const imageFilters = [
   },
 ];
 
-const imageMimeTypes: Record<string, string> = {
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.webp': 'image/webp',
-  '.bmp': 'image/bmp',
-  '.gif': 'image/gif',
-  '.tif': 'image/tiff',
-  '.tiff': 'image/tiff',
-};
-
 async function toImageFile(filePath: string): Promise<ImageFile> {
-  const buffer = await readFile(filePath);
-  const extension = path.extname(filePath).toLowerCase();
-  const mimeType = imageMimeTypes[extension] ?? 'application/octet-stream';
+  const opened = await engineWorker.openImage(filePath);
 
   return {
-    id: await engineWorker.openImage(filePath),
+    id: opened.id,
     name: path.basename(filePath),
-    path: filePath,
-    url: `data:${mimeType};base64,${buffer.toString('base64')}`,
+    width: opened.width,
+    height: opened.height,
+    pixelFormat: opened.pixelFormat,
   };
 }
 
@@ -86,6 +74,31 @@ ipcMain.handle('images:export', async (_event, imageId: number, params: EditPara
     params,
   });
   return { canceled: false, path: result.filePath };
+});
+
+ipcMain.on('engine-preview-port:connect', (event) => {
+  const { port1, port2 } = new MessageChannelMain();
+  let latestRequestId = 0;
+
+  port2.on('message', async ({ data }) => {
+    const request = data.request as EngineWorkerRenderRequest;
+    const buffer = data.buffer as SharedArrayBuffer | ArrayBuffer;
+    latestRequestId = Math.max(latestRequestId, request.requestId);
+    try {
+      const result = await engineWorker.renderPreviewShared(request, buffer);
+      port2.postMessage({
+        ...result,
+        superseded: result.requestId !== latestRequestId,
+      });
+    } catch (error) {
+      port2.postMessage({
+        requestId: request.requestId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+  port2.start();
+  event.senderFrame.postMessage('engine-preview-port', null, [port1]);
 });
 
 ipcMain.handle(

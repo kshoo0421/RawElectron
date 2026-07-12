@@ -18,6 +18,7 @@ target_link_libraries(rawelectron_codec PUBLIC rawelectron_image_core)
 target_link_libraries(rawelectron_codec PRIVATE opencv_core opencv_imgcodecs opencv_imgproc)
 target_link_libraries(rawelectron_processing PUBLIC rawelectron_image_core)
 target_link_libraries(rawelectron_renderer PUBLIC rawelectron_image_core)
+target_link_libraries(rawelectron_renderer PRIVATE opencv_core opencv_imgproc)
 target_link_libraries(rawelectron_engine PUBLIC
   rawelectron_image_core
   rawelectron_codec

@@ -23,14 +23,25 @@ export type SharedBitmap = {
   data: Uint8ClampedArray;
 };
 
+export type OpenedImage = {
+  id: number;
+  width: number;
+  height: number;
+  pixelFormat: 'rgba8';
+};
+
 type NativeEngineAddon = {
   getEngineInfo: () => { name: string; apiVersion: string; ready: boolean };
-  openImage: (path: string) => number;
+  openImage: (path: string) => OpenedImage;
   closeImage: (imageId: number) => boolean;
   createSharedBitmap: (width: number, height: number) => SharedBitmap;
   fillSharedBitmap: (bitmap: SharedBitmap, rgba: number) => SharedBitmap;
   checksumSharedBitmap: (bitmap: SharedBitmap) => number;
   renderPreview: (request: EngineWorkerRenderRequest) => NativeRenderResponse;
+  renderPreviewInto: (
+    request: EngineWorkerRenderRequest,
+    bitmap: SharedBitmap,
+  ) => Omit<NativeRenderResponse, 'data'>;
   exportRenderedImage: (request: EngineWorkerExportRequest) => { path: string };
 };
 

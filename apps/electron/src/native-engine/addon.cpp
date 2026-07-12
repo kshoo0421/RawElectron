@@ -234,6 +234,67 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
   }
 }
 
+napi_value RenderPreviewInto(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  Check(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "Failed to read renderPreviewInto arguments");
+  if (argc < 2) {
+    napi_throw_type_error(env, nullptr, "renderPreviewInto requires a request and shared bitmap");
+    return nullptr;
+  }
+
+  try {
+    napi_value request = args[0];
+    const int32_t request_id = GetIntProperty(env, request, "requestId");
+    const auto image_id = GetImageIdProperty(env, request);
+    const EditParams params = ReadEditParams(env, request);
+    rawelectron::image_core::Adjustment adjustment;
+    adjustment.exposure = params.exposure;
+    adjustment.contrast = params.contrast;
+    adjustment.saturation = params.saturation;
+    ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, adjustment));
+
+    int32_t max_width = 1600;
+    int32_t max_height = 1200;
+    if (HasProperty(env, request, "preview")) {
+      napi_value preview = GetProperty(env, request, "preview");
+      max_width = GetIntProperty(env, preview, "maxWidth", max_width);
+      max_height = GetIntProperty(env, preview, "maxHeight", max_height);
+    }
+
+    const SharedBitmapData storage = GetSharedBitmapData(env, args[1]);
+    rawelectron::image_core::BitmapView output;
+    output.data = storage.data;
+    output.byte_length = storage.byte_length;
+    output.stride = static_cast<std::uint32_t>(storage.stride);
+    ThrowIfFailed(
+        env,
+        rawelectron::ipc::render_preview_into(
+            image_id,
+            {static_cast<std::uint32_t>(std::max(0, max_width)),
+             static_cast<std::uint32_t>(std::max(0, max_height))},
+            output));
+
+    napi_value result;
+    Check(env, napi_create_object(env, &result), "Failed to create shared preview result");
+    napi_value value;
+    Check(env, napi_create_int32(env, request_id, &value), "Failed to create requestId");
+    Check(env, napi_set_named_property(env, result, "requestId", value), "Failed to set requestId");
+    Check(env, napi_create_uint32(env, output.size.width, &value), "Failed to create width");
+    Check(env, napi_set_named_property(env, result, "width", value), "Failed to set width");
+    Check(env, napi_create_uint32(env, output.size.height, &value), "Failed to create height");
+    Check(env, napi_set_named_property(env, result, "height", value), "Failed to set height");
+    Check(env, napi_create_uint32(env, output.stride, &value), "Failed to create stride");
+    Check(env, napi_set_named_property(env, result, "stride", value), "Failed to set stride");
+    Check(env, napi_create_string_utf8(env, "cpp-opencv", NAPI_AUTO_LENGTH, &value), "Failed to create engine");
+    Check(env, napi_set_named_property(env, result, "engine", value), "Failed to set engine");
+    return result;
+  } catch (const std::exception& error) {
+    napi_throw_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
+
 napi_value ExportRenderedImage(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
@@ -312,8 +373,19 @@ napi_value OpenImage(napi_env env, napi_callback_info info) {
     path.resize(length);
     rawelectron::image_core::ImageId image_id = 0;
     ThrowIfFailed(env, rawelectron::ipc::open_image(path, image_id));
+    rawelectron::engine::ImageInfo image_info;
+    ThrowIfFailed(env, rawelectron::ipc::get_image_info(image_id, image_info));
     napi_value result;
-    Check(env, napi_create_int64(env, static_cast<int64_t>(image_id), &result), "Failed to create imageId");
+    Check(env, napi_create_object(env, &result), "Failed to create image info");
+    napi_value value;
+    Check(env, napi_create_int64(env, static_cast<int64_t>(image_id), &value), "Failed to create imageId");
+    Check(env, napi_set_named_property(env, result, "id", value), "Failed to set imageId");
+    Check(env, napi_create_uint32(env, image_info.size.width, &value), "Failed to create width");
+    Check(env, napi_set_named_property(env, result, "width", value), "Failed to set width");
+    Check(env, napi_create_uint32(env, image_info.size.height, &value), "Failed to create height");
+    Check(env, napi_set_named_property(env, result, "height", value), "Failed to set height");
+    Check(env, napi_create_string_utf8(env, "rgba8", NAPI_AUTO_LENGTH, &value), "Failed to create pixel format");
+    Check(env, napi_set_named_property(env, result, "pixelFormat", value), "Failed to set pixel format");
     return result;
   } catch (const std::exception& error) {
     napi_throw_error(env, nullptr, error.what());
@@ -466,8 +538,9 @@ napi_value Init(napi_env env, napi_value exports) {
   napi_property_descriptor engine_properties[] = {
       {"openImage", nullptr, OpenImage, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"closeImage", nullptr, CloseImage, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"renderPreviewInto", nullptr, RenderPreviewInto, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
-  Check(env, napi_define_properties(env, exports, 2, engine_properties), "Failed to export engine functions");
+  Check(env, napi_define_properties(env, exports, 3, engine_properties), "Failed to export engine functions");
 
   napi_property_descriptor bitmap_properties[] = {
       {"createSharedBitmap", nullptr, CreateSharedBitmap, nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -28,6 +28,10 @@ class IRenderer {
       const image_core::Bitmap& input,
       image_core::Size maximum_size,
       image_core::Bitmap& output) = 0;
+  virtual image_core::Status render_preview_into(
+      const image_core::Bitmap& input,
+      image_core::Size maximum_size,
+      image_core::BitmapView& output) = 0;
 };
 
 }  // namespace rawelectron::interfaces

@@ -78,8 +78,9 @@ type ToolSection = {
 type ImageFile = {
   id: number;
   name: string;
-  path: string;
-  url: string;
+  width: number;
+  height: number;
+  pixelFormat: 'rgba8';
 };
 
 type PreviewBitmap = EngineWorkerRenderResponse['bitmap'];
@@ -92,12 +93,130 @@ declare global {
         imageId: number,
         params: EditParams,
       ) => Promise<{ canceled: boolean; path?: string }>;
+      connectPreviewPort: () => void;
       engineWorker: {
         renderPreview: (
           request: EngineWorkerRenderRequest,
         ) => Promise<EngineWorkerRenderResponse>;
+        exportRenderedImage: (request: unknown) => Promise<{ path: string }>;
       };
     };
+  }
+}
+
+type PreviewPortResponse = {
+  requestId: number;
+  width?: number;
+  height?: number;
+  stride?: number;
+  engine?: EngineWorkerRenderResponse['engine'];
+  data?: Uint8ClampedArray;
+  superseded?: boolean;
+  error?: string;
+};
+
+type PendingPreview = {
+  buffer: SharedArrayBuffer | null;
+  timeoutId: number;
+  resolve: (response: EngineWorkerRenderResponse) => void;
+  reject: (error: Error) => void;
+};
+
+let previewPortPromise: Promise<MessagePort> | null = null;
+const pendingPreviews = new Map<number, PendingPreview>();
+const MAX_FULL_BITMAP_BYTES = 512 * 1024 * 1024;
+
+function getPreviewPort(): Promise<MessagePort> {
+  if (previewPortPromise) return previewPortPromise;
+  previewPortPromise = new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      window.removeEventListener('message', handlePort);
+      previewPortPromise = null;
+      reject(new Error('Preview MessagePort connection timed out'));
+    }, 1500);
+    const handlePort = (event: MessageEvent) => {
+      if (event.data?.type !== 'engine-preview-port' || !event.ports[0]) return;
+      window.removeEventListener('message', handlePort);
+      window.clearTimeout(timeoutId);
+      const port = event.ports[0];
+      port.onmessage = ({ data }: MessageEvent<PreviewPortResponse>) => {
+        const pending = pendingPreviews.get(data.requestId);
+        if (!pending) return;
+        pendingPreviews.delete(data.requestId);
+        window.clearTimeout(pending.timeoutId);
+        if (data.error || data.superseded) {
+          pending.reject(new Error(data.error ?? 'Preview request was superseded'));
+          return;
+        }
+        if (!data.width || !data.height || !data.stride || !data.engine) {
+          pending.reject(new Error('Preview response metadata is incomplete'));
+          return;
+        }
+        const pixels = data.data ?? new Uint8ClampedArray(
+          pending.buffer as SharedArrayBuffer,
+          0,
+          data.stride * data.height,
+        );
+        pending.resolve({
+          requestId: data.requestId,
+          engine: data.engine,
+          bitmap: {
+            width: data.width,
+            height: data.height,
+            stride: data.stride,
+            pixelFormat: 'rgba8',
+            data: pixels,
+          },
+        });
+      };
+      port.start();
+      resolve(port);
+    };
+    window.addEventListener('message', handlePort);
+    window.rawElectron.connectPreviewPort();
+  });
+  return previewPortPromise;
+}
+
+async function renderPreviewThroughPort(
+  request: EngineWorkerRenderRequest,
+): Promise<EngineWorkerRenderResponse> {
+  const port = await getPreviewPort();
+  for (const [requestId, pending] of pendingPreviews) {
+    if (requestId < request.requestId) {
+      pending.reject(new Error('Preview request was superseded'));
+      window.clearTimeout(pending.timeoutId);
+      pendingPreviews.delete(requestId);
+    }
+  }
+  const byteLength = request.preview.maxWidth * request.preview.maxHeight * 4;
+  const shared = typeof SharedArrayBuffer === 'function';
+  const buffer = shared ? new SharedArrayBuffer(byteLength) : new ArrayBuffer(byteLength);
+  const response = new Promise<EngineWorkerRenderResponse>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      pendingPreviews.delete(request.requestId);
+      reject(new Error('Shared preview request timed out'));
+    }, 3000);
+    pendingPreviews.set(request.requestId, {
+      buffer: shared ? buffer as SharedArrayBuffer : null,
+      timeoutId,
+      resolve,
+      reject,
+    });
+  });
+  if (shared) port.postMessage({ request, buffer });
+  else port.postMessage({ request, buffer }, [buffer as ArrayBuffer]);
+  return response;
+}
+
+async function renderPreviewWithFallback(
+  request: EngineWorkerRenderRequest,
+): Promise<EngineWorkerRenderResponse> {
+  try {
+    return await renderPreviewThroughPort(request);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('superseded')) throw error;
+    return window.rawElectron.engineWorker.renderPreview(request);
   }
 }
 
@@ -378,8 +497,10 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [activeTool, setActiveTool] = useState<ActiveTool>('edit');
   const [images, setImages] = useState<ImageFile[]>([]);
-  const [selectedImagePath, setSelectedImagePath] = useState<string | null>(null);
+  const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [renderedPreviewBitmap, setRenderedPreviewBitmap] = useState<PreviewBitmap | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [viewportPixels, setViewportPixels] = useState({ width: 1280, height: 960 });
   const engineRequestId = useRef(0);
   const [sections, setSections] = useState<ToolSection[]>(editSections);
   const [maskControls, setMaskControls] = useState<ToolSection[]>(maskSections);
@@ -456,7 +577,7 @@ function App() {
     };
   }, [sections]);
 
-  const selectedImage = images.find((image) => image.path === selectedImagePath) ?? null;
+  const selectedImage = images.find((image) => image.id === selectedImageId) ?? null;
   const editParams = useMemo(
     () =>
       buildEditParams(
@@ -474,42 +595,86 @@ function App() {
   useEffect(() => {
     if (!selectedImage) {
       setRenderedPreviewBitmap(null);
+      setPreviewError(null);
       return undefined;
     }
 
-    const requestId = engineRequestId.current + 1;
-    engineRequestId.current = requestId;
-    const timeoutId = window.setTimeout(async () => {
-      const response = await window.rawElectron.engineWorker.renderPreview({
+    setRenderedPreviewBitmap(null);
+    setPreviewError(null);
+    let cancelled = false;
+    let fullRenderTimeout: number | undefined;
+
+    const renderBitmap = async (maxWidth: number, maxHeight: number) => {
+      const requestId = engineRequestId.current + 1;
+      engineRequestId.current = requestId;
+      return renderPreviewWithFallback({
         requestId,
         imageId: selectedImage.id,
         params: editParams,
-        preview: {
-          maxWidth: 1600,
-          maxHeight: 1200,
-        },
+        preview: { maxWidth, maxHeight },
       });
+    };
 
-      if (response.requestId === engineRequestId.current) {
-        setRenderedPreviewBitmap(response.bitmap);
+    const proxyRenderTimeout = window.setTimeout(async () => {
+      try {
+        const proxyWidth = Math.max(1, Math.ceil(viewportPixels.width / 2));
+        const proxyHeight = Math.max(1, Math.ceil(viewportPixels.height / 2));
+        const proxy = await renderBitmap(proxyWidth, proxyHeight);
+        if (cancelled || proxy.requestId !== engineRequestId.current) return;
+        setRenderedPreviewBitmap(proxy.bitmap);
+
+        const fullWidth = Math.min(selectedImage.width, viewportPixels.width);
+        const fullHeight = Math.min(selectedImage.height, viewportPixels.height);
+        const needsFullBitmap = fullWidth > proxy.bitmap.width || fullHeight > proxy.bitmap.height;
+        const fullBitmapBytes = fullWidth * fullHeight * 4;
+        if (!needsFullBitmap || fullBitmapBytes > MAX_FULL_BITMAP_BYTES) return;
+
+        // Give React a frame to present the proxy before requesting the full bitmap.
+        fullRenderTimeout = window.setTimeout(async () => {
+          try {
+            const full = await renderBitmap(fullWidth, fullHeight);
+            if (!cancelled && full.requestId === engineRequestId.current) {
+              setRenderedPreviewBitmap(full.bitmap);
+            }
+          } catch {
+            // Keep the proxy when a full render is superseded or fails.
+          }
+        }, 50);
+      } catch (error) {
+        if (!cancelled) {
+          setPreviewError(
+            `파일은 로드됐지만 Preview를 생성하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       }
-    }, 80);
+    }, 20);
 
-    return () => window.clearTimeout(timeoutId);
-  }, [selectedImage, editParams]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(proxyRenderTimeout);
+      if (fullRenderTimeout !== undefined) window.clearTimeout(fullRenderTimeout);
+    };
+  }, [selectedImage, editParams, viewportPixels]);
 
   const openImages = async () => {
-    const openedImages = await window.rawElectron.openImages();
+    setPreviewError(null);
+    let openedImages: ImageFile[];
+    try {
+      openedImages = await window.rawElectron.openImages();
+    } catch (error) {
+      setPreviewError(`파일을 열지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
 
     if (!openedImages.length) {
       return;
     }
 
     setImages((current) => {
-      const knownPaths = new Set(current.map((image) => image.path));
-      return [...current, ...openedImages.filter((image) => !knownPaths.has(image.path))];
+      const knownIds = new Set(current.map((image) => image.id));
+      return [...current, ...openedImages.filter((image) => !knownIds.has(image.id))];
     });
-    setSelectedImagePath(openedImages[0].path);
+    setSelectedImageId(openedImages[0].id);
     setActiveTool('edit');
   };
 
@@ -552,12 +717,14 @@ function App() {
           images={images}
           selectedImage={selectedImage}
           renderedPreviewBitmap={renderedPreviewBitmap}
+          previewError={previewError}
+          onViewportPixelsChange={setViewportPixels}
           previewFilter={previewFilter}
           activeTool={activeTool}
           selectedRatio={selectedRatio}
           onOpenImages={openImages}
           onSelectImage={(image) => {
-            setSelectedImagePath(image.path);
+            setSelectedImageId(image.id);
             setActiveTool('edit');
           }}
         />
@@ -793,6 +960,8 @@ function Viewer({
   images,
   selectedImage,
   renderedPreviewBitmap,
+  previewError,
+  onViewportPixelsChange,
   previewFilter,
   activeTool,
   selectedRatio,
@@ -802,6 +971,8 @@ function Viewer({
   images: ImageFile[];
   selectedImage: ImageFile | null;
   renderedPreviewBitmap: PreviewBitmap | null;
+  previewError: string | null;
+  onViewportPixelsChange: (size: { width: number; height: number }) => void;
   previewFilter: React.CSSProperties;
   activeTool: ActiveTool;
   selectedRatio: string;
@@ -809,17 +980,33 @@ function Viewer({
   onSelectImage: (image: ImageFile) => void;
 }) {
   const showToolFooter = activeTool !== 'edit';
+  const stageRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(entry.contentRect.width * ratio));
+      const height = Math.max(1, Math.round(entry.contentRect.height * ratio));
+      onViewportPixelsChange({ width, height });
+    });
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [onViewportPixelsChange]);
 
   return (
     <section className="viewer" aria-label="사진 미리보기">
-      <div className="stage">
+      <div className="stage" ref={stageRef}>
         <div className={`photo-frame ${activeTool === 'crop' && selectedImage ? 'crop-active' : ''}`}>
           {selectedImage ? (
             <div className="sample-photo loaded-photo" style={previewFilter} role="img" aria-label={selectedImage.name}>
               {renderedPreviewBitmap ? (
                 <BitmapCanvas bitmap={renderedPreviewBitmap} label={selectedImage.name} />
               ) : (
-                <img className="photo-img" src={selectedImage.url} alt={selectedImage.name} />
+                <div className={`preview-loading ${previewError ? 'preview-error' : ''}`} role="status">
+                  {previewError ?? '파일 로드 완료 · Proxy Preview 생성 중…'}
+                </div>
               )}
               {activeTool === 'mask' && <div className="mask-overlay" />}
             </div>
@@ -923,13 +1110,15 @@ function ImageFilmstrip({
     <aside className="filmstrip" aria-label="사진 목록">
       {images.map((image) => (
         <button
-          key={image.path}
-          className={`thumb ${selectedImage?.path === image.path ? 'selected' : ''}`}
+          key={image.id}
+          className={`thumb ${selectedImage?.id === image.id ? 'selected' : ''}`}
           aria-label={`${image.name} 선택`}
           title={image.name}
           onClick={() => onSelectImage(image)}
         >
-          <img src={image.url} alt="" />
+          <div className="thumb-placeholder" aria-hidden="true">
+            {image.width}×{image.height}
+          </div>
         </button>
       ))}
       <button className="thumb add-thumb" aria-label="사진 추가" onClick={onOpenImages}>

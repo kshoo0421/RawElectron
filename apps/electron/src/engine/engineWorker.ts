@@ -5,6 +5,7 @@ import type {
   EngineWorkerRenderRequest,
   EngineWorkerRenderResponse,
 } from '../shared/engineTypes';
+import type { OpenedImage } from './nativeAddon';
 
 type WorkerResponse = {
   id: number;
@@ -25,6 +26,8 @@ type NativePreview = {
   data: Uint8ClampedArray;
   engine: 'cpp' | 'cpp-opencv';
 };
+
+export type SharedPreviewResult = Omit<NativePreview, 'data'> & { data?: Uint8ClampedArray };
 
 export class EngineWorker {
   private readonly worker = new Worker(path.join(__dirname, 'engineHost.js'));
@@ -60,10 +63,10 @@ export class EngineWorker {
     });
   }
 
-  async openImage(imagePath: string): Promise<number> {
-    const imageId = await this.call<number>('openImage', { imagePath });
-    this.imagePaths.set(imageId, imagePath);
-    return imageId;
+  async openImage(imagePath: string): Promise<OpenedImage> {
+    const image = await this.call<OpenedImage>('openImage', { imagePath });
+    this.imagePaths.set(image.id, imagePath);
+    return image;
   }
 
   async closeImage(imageId: number): Promise<void> {
@@ -90,6 +93,10 @@ export class EngineWorker {
       },
       engine: response.engine,
     };
+  }
+
+  renderPreviewShared(request: EngineWorkerRenderRequest, buffer: SharedArrayBuffer | ArrayBuffer) {
+    return this.call<SharedPreviewResult>('renderPreviewShared', { request, buffer });
   }
 
   exportRenderedImage(request: EngineWorkerExportRequest) {

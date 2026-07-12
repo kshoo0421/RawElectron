@@ -2,14 +2,53 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 namespace rawelectron::codec {
 
+namespace {
+std::filesystem::path utf8_path(const std::string& value) {
+  const std::u8string utf8(
+      reinterpret_cast<const char8_t*>(value.data()),
+      reinterpret_cast<const char8_t*>(value.data() + value.size()));
+  return std::filesystem::path(utf8);
+}
+
+image_core::Status read_file(const std::string& path, std::vector<std::uint8_t>& bytes) {
+  std::ifstream stream(utf8_path(path), std::ios::binary);
+  if (!stream) {
+    return {image_core::StatusCode::invalid_argument, "Failed to open image file"};
+  }
+  bytes.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+  if (bytes.empty()) {
+    return {image_core::StatusCode::invalid_argument, "Image file is empty"};
+  }
+  return image_core::Status::success();
+}
+
+image_core::Status write_file(const std::string& path, const std::vector<std::uint8_t>& bytes) {
+  std::ofstream stream(utf8_path(path), std::ios::binary | std::ios::trunc);
+  if (!stream) {
+    return {image_core::StatusCode::internal_error, "Failed to open output file"};
+  }
+  stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  if (!stream) {
+    return {image_core::StatusCode::internal_error, "Failed to write output file"};
+  }
+  return image_core::Status::success();
+}
+}  // namespace
+
 image_core::Status OpenCvDecoder::decode(const std::string& path, image_core::Bitmap& output) {
-  cv::Mat decoded = cv::imread(path, cv::IMREAD_UNCHANGED);
+  std::vector<std::uint8_t> file_bytes;
+  const auto read_status = read_file(path, file_bytes);
+  if (!read_status.ok()) return read_status;
+  cv::Mat decoded = cv::imdecode(file_bytes, cv::IMREAD_UNCHANGED);
   if (decoded.empty()) {
     return {image_core::StatusCode::invalid_argument, "Failed to decode image"};
   }
@@ -88,10 +127,12 @@ image_core::Status encode_file(const image_core::Bitmap& bitmap, const std::stri
   } else {
     cv::cvtColor(as_rgba_mat(bitmap), encoded, cv::COLOR_RGBA2BGRA);
   }
-  if (!cv::imwrite(output_path, encoded)) {
-    return {image_core::StatusCode::internal_error, "Failed to write output image"};
+  if (extension.empty()) extension = ".png";
+  std::vector<std::uint8_t> file_bytes;
+  if (!cv::imencode(extension, encoded, file_bytes)) {
+    return {image_core::StatusCode::internal_error, "Failed to encode output image"};
   }
-  return image_core::Status::success();
+  return write_file(output_path, file_bytes);
 }
 
 }  // namespace rawelectron::codec

@@ -25,15 +25,35 @@ function call(type, payload) {
 async function main() {
   const imagePath = path.resolve(__dirname, '..', '..', '..', 'third_party', 'opencv', 'samples', 'data', 'lena.jpg');
   const outputPath = path.resolve(__dirname, '..', 'native', 'build', 'engine-worker-export.png');
-  const imageId = await call('openImage', { imagePath });
-  const preview = await call('renderPreview', {
-    requestId: 91,
-    imageId,
-    params: { exposure: 0.1, contrast: 3, saturation: 5 },
-    preview: { maxWidth: 320, maxHeight: 240 },
+  const opened = await call('openImage', { imagePath });
+  const imageId = opened.id;
+  const sharedBuffer = new SharedArrayBuffer(320 * 240 * 4);
+  const preview = await call('renderPreviewShared', {
+    request: {
+      requestId: 91,
+      imageId,
+      params: { exposure: 0.1, contrast: 3, saturation: 5 },
+      preview: { maxWidth: 320, maxHeight: 240 },
+    },
+    buffer: sharedBuffer,
   });
-  if (!(preview.data instanceof Uint8ClampedArray) || preview.data.length !== preview.stride * preview.height) {
-    throw new Error('Worker did not transfer a valid RGBA8 preview');
+  const previewPixels = new Uint8ClampedArray(sharedBuffer, 0, preview.stride * preview.height);
+  if (preview.data !== undefined || previewPixels.length !== preview.stride * preview.height || !previewPixels.some(Boolean)) {
+    throw new Error('Worker did not write a valid shared RGBA8 preview');
+  }
+  const fullBuffer = new SharedArrayBuffer(opened.width * opened.height * 4);
+  const full = await call('renderPreviewShared', {
+    request: {
+      requestId: 92,
+      imageId,
+      params: { exposure: 0.1, contrast: 3, saturation: 5 },
+      preview: { maxWidth: opened.width, maxHeight: opened.height },
+    },
+    buffer: fullBuffer,
+  });
+  const fullPixels = new Uint8ClampedArray(fullBuffer, 0, full.stride * full.height);
+  if (full.width !== opened.width || full.height !== opened.height || !fullPixels.some(Boolean)) {
+    throw new Error('Worker did not replace the proxy with the full bitmap');
   }
   await call('exportImage', { imageId, outputPath, params: { exposure: 0, contrast: 0, saturation: 0 } });
   const exportBytes = fs.statSync(outputPath).size;
@@ -41,9 +61,12 @@ async function main() {
   await call('closeImage', { imageId });
   console.log(JSON.stringify({
     imageId,
-    preview: { width: preview.width, height: preview.height, bytes: preview.data.length },
+    imageInfo: opened,
+    preview: { width: preview.width, height: preview.height, bytes: previewPixels.length },
+    full: { width: full.width, height: full.height, bytes: fullPixels.length },
     exportBytes,
     workerThread: true,
+    sharedMemory: true,
   }));
 }
 

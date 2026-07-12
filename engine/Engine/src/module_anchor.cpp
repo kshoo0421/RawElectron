@@ -29,6 +29,18 @@ image_core::Status EngineApi::close_image(image_core::ImageId image_id) {
   return image_core::Status::success();
 }
 
+image_core::Status EngineApi::get_image_info(image_core::ImageId image_id, ImageInfo& info) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto found = images_.find(image_id);
+  if (found == images_.end()) {
+    return {image_core::StatusCode::invalid_argument, "ImageId was not found"};
+  }
+  info.id = image_id;
+  info.size = found->second.original.size;
+  info.format = found->second.original.format;
+  return image_core::Status::success();
+}
+
 image_core::Status EngineApi::set_adjustment(
     image_core::ImageId image_id,
     const image_core::Adjustment& adjustment) {
@@ -86,6 +98,29 @@ image_core::Status EngineApi::render_preview_png(
   const auto status = render_preview(image_id, maximum_size, preview);
   if (!status.ok()) return status;
   return codec::encode_png(preview, output);
+}
+
+image_core::Status EngineApi::render_preview_into(
+    image_core::ImageId image_id,
+    image_core::Size maximum_size,
+    image_core::BitmapView& output) {
+  image_core::Bitmap original;
+  image_core::Adjustment adjustment;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = images_.find(image_id);
+    if (found == images_.end()) {
+      return {image_core::StatusCode::invalid_argument, "ImageId was not found"};
+    }
+    original = found->second.original;
+    adjustment = found->second.adjustment;
+  }
+  processing::BasicProcessor processor;
+  image_core::Bitmap processed;
+  const auto status = processor.process(original, adjustment, processed);
+  if (!status.ok()) return status;
+  renderer::ProxyRenderer renderer;
+  return renderer.render_preview_into(processed, maximum_size, output);
 }
 
 image_core::Status EngineApi::export_image(image_core::ImageId image_id, const std::string& output_path) {

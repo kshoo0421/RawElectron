@@ -9,6 +9,11 @@ type EngineCommand =
   | { id: number; type: 'openImage'; payload: { imagePath: string } }
   | { id: number; type: 'closeImage'; payload: { imageId: number } }
   | { id: number; type: 'renderPreview'; payload: EngineWorkerRenderRequest }
+  | {
+      id: number;
+      type: 'renderPreviewShared';
+      payload: { request: EngineWorkerRenderRequest; buffer: SharedArrayBuffer | ArrayBuffer };
+    }
   | { id: number; type: 'exportImage'; payload: EngineWorkerExportRequest };
 
 const port = parentPort;
@@ -34,6 +39,25 @@ port.on('message', (command: EngineCommand) => {
         const preview = addon.renderPreview(command.payload);
         result = preview;
         transferList = [preview.data.buffer];
+        break;
+      }
+      case 'renderPreviewShared': {
+        const sharedPixels = new Uint8ClampedArray(command.payload.buffer);
+        const preview = addon.renderPreviewInto(command.payload.request, {
+          width: command.payload.request.preview.maxWidth,
+          height: command.payload.request.preview.maxHeight,
+          stride: command.payload.request.preview.maxWidth * 4,
+          pixelFormat: 'rgba8',
+          data: sharedPixels,
+        });
+        result = {
+          requestId: preview.requestId,
+          width: preview.width,
+          height: preview.height,
+          stride: preview.stride,
+          engine: preview.engine,
+          data: command.payload.buffer instanceof SharedArrayBuffer ? undefined : sharedPixels,
+        };
         break;
       }
       case 'exportImage':
