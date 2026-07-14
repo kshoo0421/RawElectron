@@ -1,0 +1,10 @@
+# Pinned vendored dependency roots. Engine modules consume these privately.
+set(RAWELECTRON_LIBRAW_ROOT "${CMAKE_CURRENT_LIST_DIR}/libraw" CACHE PATH "LibRaw source root")
+set(RAWELECTRON_EXIV2_ROOT "${CMAKE_CURRENT_LIST_DIR}/exiv2" CACHE PATH "Exiv2 source root")
+set(RAWELECTRON_LCMS2_ROOT "${CMAKE_CURRENT_LIST_DIR}/lcms2" CACHE PATH "Little CMS source root")
+set(RAWELECTRON_JPEG_TURBO_ROOT "${CMAKE_CURRENT_LIST_DIR}/libjpeg-turbo" CACHE PATH "libjpeg-turbo source root")
+set(RAWELECTRON_LIBPNG_ROOT "${CMAKE_CURRENT_LIST_DIR}/libpng" CACHE PATH "libpng source root")
+set(RAWELECTRON_LIBTIFF_ROOT "${CMAKE_CURRENT_LIST_DIR}/libtiff" CACHE PATH "libtiff source root")
+set(RAWELECTRON_LIBAVIF_ROOT "${CMAKE_CURRENT_LIST_DIR}/libavif" CACHE PATH "libavif source root")
+set(RAWELECTRON_DAV1D_ROOT "${CMAKE_CURRENT_LIST_DIR}/dav1d" CACHE PATH "dav1d source root")
+set(RAWELECTRON_JXRLIB_ROOT "${CMAKE_CURRENT_LIST_DIR}/jxrlib" CACHE PATH "jxrlib source root")

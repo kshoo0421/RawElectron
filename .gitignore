@@ -7,3 +7,6 @@ apps/electron/out/
 build/
 third_party/opencv/.cache/
 third_party/opencv/build/
+third_party/*/build/
+third_party/*/install/
+third_party/*/.cache/

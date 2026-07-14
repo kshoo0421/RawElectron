@@ -1,0 +1,2 @@
+# Native third-party build tooling
+meson==1.7.2
