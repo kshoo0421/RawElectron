@@ -20,11 +20,13 @@ image_core::Status render_preview_png(
 image_core::Status render_preview(
     image_core::ImageId image_id,
     image_core::Size maximum_size,
-    image_core::Bitmap& output);
+    image_core::Bitmap& output,
+    engine::PreviewSource source = engine::PreviewSource::proxy);
 image_core::Status render_preview_into(
     image_core::ImageId image_id,
     image_core::Size maximum_size,
-    image_core::BitmapView& output);
+    image_core::BitmapView& output,
+    engine::PreviewSource source = engine::PreviewSource::proxy);
 image_core::Status export_image(image_core::ImageId image_id, const std::string& output_path);
 
 }  // namespace rawelectron::ipc

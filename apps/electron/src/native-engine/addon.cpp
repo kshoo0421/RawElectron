@@ -152,6 +152,14 @@ EditParams ReadEditParams(napi_env env, napi_value request) {
   return params;
 }
 
+rawelectron::engine::PreviewSource ReadPreviewSource(napi_env env, napi_value request) {
+  if (HasProperty(env, request, "quality") &&
+      GetStringProperty(env, request, "quality") == "original") {
+    return rawelectron::engine::PreviewSource::original;
+  }
+  return rawelectron::engine::PreviewSource::proxy;
+}
+
 napi_value RenderPreview(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
@@ -166,6 +174,7 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
     napi_value request = args[0];
     const int32_t request_id = GetIntProperty(env, request, "requestId");
     const auto image_id = GetImageIdProperty(env, request);
+    const auto preview_source = ReadPreviewSource(env, request);
     const EditParams params = ReadEditParams(env, request);
     rawelectron::image_core::Adjustment engine_adjustment;
     engine_adjustment.exposure = params.exposure;
@@ -189,7 +198,8 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
             image_id,
             {static_cast<std::uint32_t>(std::max(0, max_width)),
              static_cast<std::uint32_t>(std::max(0, max_height))},
-            bitmap));
+            bitmap,
+            preview_source));
 
     napi_value result;
     Check(env, napi_create_object(env, &result), "Failed to create result object");
@@ -247,6 +257,7 @@ napi_value RenderPreviewInto(napi_env env, napi_callback_info info) {
     napi_value request = args[0];
     const int32_t request_id = GetIntProperty(env, request, "requestId");
     const auto image_id = GetImageIdProperty(env, request);
+    const auto preview_source = ReadPreviewSource(env, request);
     const EditParams params = ReadEditParams(env, request);
     rawelectron::image_core::Adjustment adjustment;
     adjustment.exposure = params.exposure;
@@ -273,7 +284,8 @@ napi_value RenderPreviewInto(napi_env env, napi_callback_info info) {
             image_id,
             {static_cast<std::uint32_t>(std::max(0, max_width)),
              static_cast<std::uint32_t>(std::max(0, max_height))},
-            output));
+            output,
+            preview_source));
 
     napi_value result;
     Check(env, napi_create_object(env, &result), "Failed to create shared preview result");

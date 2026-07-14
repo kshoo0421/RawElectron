@@ -295,6 +295,22 @@ High
 
 순서로 점진적으로 표시할 수 있다.
 
+초기 구현은 다음 두 파이프라인을 같은 Edit State와 Render Generation으로 동시에 실행한다.
+
+```
+Proxy Buffer   → Pipeline → Shared Preview Buffer A ─┐
+                                                    ├→ UI
+Original Buffer → Pipeline → Display Resize
+                → Shared Preview Buffer B ──────────┘
+```
+
+- Proxy Buffer는 이미지를 열 때 미리 생성하고 Engine이 보유한다.
+- Proxy 결과가 준비되면 UI는 즉시 A를 표시한다.
+- 원본 해상도 파이프라인이 완료되면 화면 표시 크기로 만든 B가 A를 교체한다.
+- 두 결과의 완료 순서는 고정하지 않으며, 원본 결과가 먼저 준비된 경우 Proxy가 다시 덮어쓰지 않는다.
+- Original Buffer 자체는 Shared Memory 또는 IPC로 전달하지 않는다. 공유되는 A와 B는 모두 UI 표시용 Preview Buffer이다.
+- 오래된 Render Generation의 결과는 UI에 반영하지 않는다.
+
 ---
 
 # 14. Render Thread

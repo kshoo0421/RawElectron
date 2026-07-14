@@ -1,5 +1,15 @@
-import { app, BrowserWindow, dialog, ipcMain, MessageChannelMain } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  MessageChannelMain,
+  net,
+  protocol,
+  session,
+} from 'electron';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
 import { EngineWorker } from './engine/engineWorker';
 import type {
@@ -7,6 +17,18 @@ import type {
   EngineWorkerExportRequest,
   EngineWorkerRenderRequest,
 } from './shared/engineTypes';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'rawelectron',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
+]);
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -78,21 +100,17 @@ ipcMain.handle('images:export', async (_event, imageId: number, params: EditPara
 
 ipcMain.on('engine-preview-port:connect', (event) => {
   const { port1, port2 } = new MessageChannelMain();
-  let latestRequestId = 0;
 
   port2.on('message', async ({ data }) => {
     const request = data.request as EngineWorkerRenderRequest;
     const buffer = data.buffer as SharedArrayBuffer | ArrayBuffer;
-    latestRequestId = Math.max(latestRequestId, request.requestId);
     try {
       const result = await engineWorker.renderPreviewShared(request, buffer);
-      port2.postMessage({
-        ...result,
-        superseded: result.requestId !== latestRequestId,
-      });
+      port2.postMessage(result);
     } catch (error) {
       port2.postMessage({
         requestId: request.requestId,
+        quality: request.quality,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -100,11 +118,6 @@ ipcMain.on('engine-preview-port:connect', (event) => {
   port2.start();
   event.senderFrame.postMessage('engine-preview-port', null, [port1]);
 });
-
-ipcMain.handle(
-  'engine-worker:render-preview',
-  async (_event, request: EngineWorkerRenderRequest) => engineWorker.renderPreview(request),
-);
 
 ipcMain.handle(
   'engine-worker:export-rendered-image',
@@ -130,18 +143,53 @@ const createWindow = () => {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
-    mainWindow.loadFile(
-      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
-    );
+    mainWindow.loadURL('rawelectron://bundle/index.html');
   }
 
 };
 
+app.whenReady().then(() => {
+  // Vite development responses need the isolation policy injected. Packaged
+  // responses get the same policy from the custom protocol handler below.
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Cross-Origin-Opener-Policy': ['same-origin'],
+          'Cross-Origin-Embedder-Policy': ['require-corp'],
+        },
+      });
+    });
+  }
+  const rendererRoot = path.resolve(
+    __dirname,
+    `../renderer/${MAIN_WINDOW_VITE_NAME}`,
+  );
+  protocol.handle('rawelectron', async (request) => {
+    const relativePath = decodeURIComponent(new URL(request.url).pathname)
+      .replace(/^\/+/, '') || 'index.html';
+    const filePath = path.resolve(rendererRoot, relativePath);
+    if (filePath !== rendererRoot && !filePath.startsWith(`${rendererRoot}${path.sep}`)) {
+      return new Response('Not found', { status: 404 });
+    }
+    const response = await net.fetch(pathToFileURL(filePath).toString());
+    const headers = new Headers(response.headers);
+    headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+    headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+    headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  });
+  createWindow();
+});
+
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.on('ready', createWindow);
-
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.

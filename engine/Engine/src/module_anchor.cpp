@@ -3,6 +3,8 @@
 #include <rawelectron/processing/processor.hpp>
 #include <rawelectron/renderer/renderer.hpp>
 
+#include <cstring>
+
 namespace rawelectron::engine {
 
 EngineInfo EngineApi::info() const { return {"RawElectron", "0.1", true}; }
@@ -15,9 +17,13 @@ image_core::Status EngineApi::open_image(const std::string& path, image_core::Im
   codec::OpenCvDecoder decoder;
   const auto decode_status = decoder.decode(path, original);
   if (!decode_status.ok()) return decode_status;
+  renderer::ProxyRenderer renderer;
+  image_core::Bitmap proxy;
+  const auto proxy_status = renderer.render_preview(original, {2048, 2048}, proxy);
+  if (!proxy_status.ok()) return proxy_status;
   std::lock_guard<std::mutex> lock(mutex_);
   image_id = next_image_id_++;
-  images_.emplace(image_id, ImageDocument{path, std::move(original), {}});
+  images_.emplace(image_id, ImageDocument{path, std::move(original), std::move(proxy), {}});
   return image_core::Status::success();
 }
 
@@ -70,8 +76,9 @@ image_core::Status EngineApi::get_image_state(
 image_core::Status EngineApi::render_preview(
     image_core::ImageId image_id,
     image_core::Size maximum_size,
-    image_core::Bitmap& output) {
-  image_core::Bitmap original;
+    image_core::Bitmap& output,
+    PreviewSource source) {
+  image_core::Bitmap input;
   image_core::Adjustment adjustment;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -79,12 +86,14 @@ image_core::Status EngineApi::render_preview(
     if (found == images_.end()) {
       return {image_core::StatusCode::invalid_argument, "ImageId was not found"};
     }
-    original = found->second.original;
+    input = source == PreviewSource::original
+        ? found->second.original
+        : found->second.proxy;
     adjustment = found->second.adjustment;
   }
   processing::BasicProcessor processor;
   image_core::Bitmap processed;
-  auto status = processor.process(original, adjustment, processed);
+  auto status = processor.process(input, adjustment, processed);
   if (!status.ok()) return status;
   renderer::ProxyRenderer renderer;
   return renderer.render_preview(processed, maximum_size, output);
@@ -103,24 +112,22 @@ image_core::Status EngineApi::render_preview_png(
 image_core::Status EngineApi::render_preview_into(
     image_core::ImageId image_id,
     image_core::Size maximum_size,
-    image_core::BitmapView& output) {
-  image_core::Bitmap original;
-  image_core::Adjustment adjustment;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto found = images_.find(image_id);
-    if (found == images_.end()) {
-      return {image_core::StatusCode::invalid_argument, "ImageId was not found"};
-    }
-    original = found->second.original;
-    adjustment = found->second.adjustment;
-  }
-  processing::BasicProcessor processor;
+    image_core::BitmapView& output,
+    PreviewSource source) {
   image_core::Bitmap processed;
-  const auto status = processor.process(original, adjustment, processed);
+  const auto status = render_preview(image_id, maximum_size, processed, source);
   if (!status.ok()) return status;
-  renderer::ProxyRenderer renderer;
-  return renderer.render_preview_into(processed, maximum_size, output);
+
+  const auto stride = processed.size.width * 4;
+  const auto required = static_cast<std::size_t>(stride) * processed.size.height;
+  if (output.data == nullptr || output.byte_length < required) {
+    return {image_core::StatusCode::invalid_argument, "Shared preview storage is too small"};
+  }
+  std::memcpy(output.data, processed.pixels.data(), required);
+  output.size = processed.size;
+  output.format = processed.format;
+  output.stride = stride;
+  return image_core::Status::success();
 }
 
 image_core::Status EngineApi::export_image(image_core::ImageId image_id, const std::string& output_path) {

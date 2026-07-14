@@ -48,15 +48,17 @@ image_core::Status render_preview_png(
 image_core::Status render_preview(
     image_core::ImageId image_id,
     image_core::Size maximum_size,
-    image_core::Bitmap& output) {
-  return engine_instance().render_preview(image_id, maximum_size, output);
+    image_core::Bitmap& output,
+    engine::PreviewSource source) {
+  return engine_instance().render_preview(image_id, maximum_size, output, source);
 }
 
 image_core::Status render_preview_into(
     image_core::ImageId image_id,
     image_core::Size maximum_size,
-    image_core::BitmapView& output) {
-  return engine_instance().render_preview_into(image_id, maximum_size, output);
+    image_core::BitmapView& output,
+    engine::PreviewSource source) {
+  return engine_instance().render_preview_into(image_id, maximum_size, output, source);
 }
 
 image_core::Status export_image(image_core::ImageId image_id, const std::string& output_path) {

@@ -11,8 +11,6 @@ contextBridge.exposeInMainWorld('rawElectron', {
     ipcRenderer.invoke('images:export', imageId, params),
   connectPreviewPort: () => ipcRenderer.send('engine-preview-port:connect'),
   engineWorker: {
-    renderPreview: (request: unknown) =>
-      ipcRenderer.invoke('engine-worker:render-preview', request),
     exportRenderedImage: (request: unknown) =>
       ipcRenderer.invoke('engine-worker:export-rendered-image', request),
   },

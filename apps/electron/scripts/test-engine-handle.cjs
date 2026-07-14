@@ -26,6 +26,7 @@ const directBitmap = {
 const directPreview = addon.renderPreviewInto({
   requestId: 76,
   imageId,
+  quality: 'proxy',
   imageInfo: opened,
   params: { exposure: 0, contrast: 0, saturation: 0 },
   preview: { maxWidth: 320, maxHeight: 240 },
@@ -41,6 +42,7 @@ if (!directPixels.some(Boolean)) {
 const preview = addon.renderPreview({
   requestId: 77,
   imageId,
+  quality: 'original',
   params: {
     exposure: 0,
     contrast: 0,
@@ -76,7 +78,7 @@ addon.closeImage(exportedImage.id);
 addon.closeImage(imageId);
 let closedHandleRejected = false;
 try {
-  addon.renderPreview({ requestId: 78, imageId, params: {}, preview: { maxWidth: 10, maxHeight: 10 } });
+  addon.renderPreview({ requestId: 78, imageId, quality: 'proxy', params: {}, preview: { maxWidth: 10, maxHeight: 10 } });
 } catch (error) {
   closedHandleRejected = /ImageId was not found/.test(String(error));
 }

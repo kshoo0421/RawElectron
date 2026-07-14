@@ -320,6 +320,15 @@ Preview는 다음 방법 중 하나를 사용한다.
 - Native Surface
 - Texture Handle
 
+초기 Shared Memory 구현의 `RenderPreview` 요청은 다음 식별자를 포함한다.
+
+- `RenderGeneration`: 동일한 편집 상태에 속한 점진적 렌더 세대
+- `Quality`: `Proxy` 또는 `Original`
+
+Engine은 두 Quality를 병렬 실행할 수 있고 `PreviewUpdated`에도 같은 식별자를 반환한다.
+Pixel Data는 IPC Payload에 넣지 않고 Quality별 Shared Preview Buffer에 직접 기록한다.
+UI는 현재 세대의 Proxy를 우선 표시하고 현재 세대의 Original 결과가 완료되면 교체한다.
+
 ---
 
 # 13. Error Codes

@@ -20,6 +20,8 @@ struct ImageInfo {
   image_core::PixelFormat format = image_core::PixelFormat::unknown;
 };
 
+enum class PreviewSource { proxy, original };
+
 class EngineApi {
  public:
   [[nodiscard]] EngineInfo info() const;
@@ -34,7 +36,8 @@ class EngineApi {
   image_core::Status render_preview(
       image_core::ImageId image_id,
       image_core::Size maximum_size,
-      image_core::Bitmap& output);
+      image_core::Bitmap& output,
+      PreviewSource source = PreviewSource::proxy);
   image_core::Status render_preview_png(
       image_core::ImageId image_id,
       image_core::Size maximum_size,
@@ -42,13 +45,15 @@ class EngineApi {
   image_core::Status render_preview_into(
       image_core::ImageId image_id,
       image_core::Size maximum_size,
-      image_core::BitmapView& output);
+      image_core::BitmapView& output,
+      PreviewSource source = PreviewSource::proxy);
   image_core::Status export_image(image_core::ImageId image_id, const std::string& output_path);
 
  private:
   struct ImageDocument {
     std::string path;
     image_core::Bitmap original;
+    image_core::Bitmap proxy;
     image_core::Adjustment adjustment;
   };
 

@@ -3,7 +3,6 @@ import { Worker } from 'node:worker_threads';
 import type {
   EngineWorkerExportRequest,
   EngineWorkerRenderRequest,
-  EngineWorkerRenderResponse,
 } from '../shared/engineTypes';
 import type { OpenedImage } from './nativeAddon';
 
@@ -20,6 +19,7 @@ type PendingCommand = {
 
 type NativePreview = {
   requestId: number;
+  quality: 'proxy' | 'original';
   width: number;
   height: number;
   stride: number;
@@ -29,10 +29,9 @@ type NativePreview = {
 
 export type SharedPreviewResult = Omit<NativePreview, 'data'> & { data?: Uint8ClampedArray };
 
-export class EngineWorker {
+class WorkerClient {
   private readonly worker = new Worker(path.join(__dirname, 'engineHost.js'));
   private readonly pending = new Map<number, PendingCommand>();
-  private readonly imagePaths = new Map<number, string>();
   private nextCommandId = 1;
 
   constructor() {
@@ -40,11 +39,8 @@ export class EngineWorker {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(message.error));
-      } else {
-        pending.resolve(message.result);
-      }
+      if (message.error) pending.reject(new Error(message.error));
+      else pending.resolve(message.result);
     });
     this.worker.on('error', (error) => {
       for (const pending of this.pending.values()) pending.reject(error);
@@ -52,15 +48,26 @@ export class EngineWorker {
     });
   }
 
-  private call<T>(type: string, payload: unknown): Promise<T> {
+  call<T>(type: string, payload: unknown): Promise<T> {
     const id = this.nextCommandId++;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, {
-        resolve: (value) => resolve(value as T),
-        reject,
-      });
+      this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
       this.worker.postMessage({ id, type, payload });
     });
+  }
+
+  terminate() {
+    return this.worker.terminate();
+  }
+}
+
+export class EngineWorker {
+  private readonly interactiveWorker = new WorkerClient();
+  private readonly originalWorker = new WorkerClient();
+  private readonly imagePaths = new Map<number, string>();
+
+  private call<T>(type: string, payload: unknown): Promise<T> {
+    return this.interactiveWorker.call<T>(type, payload);
   }
 
   async openImage(imagePath: string): Promise<OpenedImage> {
@@ -80,23 +87,9 @@ export class EngineWorker {
     return imagePath;
   }
 
-  async renderPreview(request: EngineWorkerRenderRequest): Promise<EngineWorkerRenderResponse> {
-    const response = await this.call<NativePreview>('renderPreview', request);
-    return {
-      requestId: response.requestId,
-      bitmap: {
-        width: response.width,
-        height: response.height,
-        stride: response.stride,
-        pixelFormat: 'rgba8',
-        data: response.data,
-      },
-      engine: response.engine,
-    };
-  }
-
   renderPreviewShared(request: EngineWorkerRenderRequest, buffer: SharedArrayBuffer | ArrayBuffer) {
-    return this.call<SharedPreviewResult>('renderPreviewShared', { request, buffer });
+    const worker = request.quality === 'original' ? this.originalWorker : this.interactiveWorker;
+    return worker.call<SharedPreviewResult>('renderPreviewShared', { request, buffer });
   }
 
   exportRenderedImage(request: EngineWorkerExportRequest) {
@@ -104,6 +97,6 @@ export class EngineWorker {
   }
 
   async dispose(): Promise<void> {
-    await this.worker.terminate();
+    await Promise.all([this.interactiveWorker.terminate(), this.originalWorker.terminate()]);
   }
 }

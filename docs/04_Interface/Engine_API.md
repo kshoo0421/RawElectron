@@ -180,6 +180,17 @@ Render Region
 Render Export
 ```
 
+`Render Preview`는 다음 품질 소스를 구분한다.
+
+```
+Proxy
+
+Original
+```
+
+같은 Render Generation의 Proxy 요청과 Original 요청은 동시에 실행할 수 있다.
+Original 품질 요청도 원본 버퍼를 반환하지 않으며, 최종 결과는 화면 표시 크기의 Preview Buffer로 기록한다.
+
 Render Service는 화면 표시를 담당하지 않는다.
 
 ---

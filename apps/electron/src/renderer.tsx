@@ -95,9 +95,6 @@ declare global {
       ) => Promise<{ canceled: boolean; path?: string }>;
       connectPreviewPort: () => void;
       engineWorker: {
-        renderPreview: (
-          request: EngineWorkerRenderRequest,
-        ) => Promise<EngineWorkerRenderResponse>;
         exportRenderedImage: (request: unknown) => Promise<{ path: string }>;
       };
     };
@@ -106,12 +103,12 @@ declare global {
 
 type PreviewPortResponse = {
   requestId: number;
+  quality: 'proxy' | 'original';
   width?: number;
   height?: number;
   stride?: number;
   engine?: EngineWorkerRenderResponse['engine'];
   data?: Uint8ClampedArray;
-  superseded?: boolean;
   error?: string;
 };
 
@@ -123,8 +120,7 @@ type PendingPreview = {
 };
 
 let previewPortPromise: Promise<MessagePort> | null = null;
-const pendingPreviews = new Map<number, PendingPreview>();
-const MAX_FULL_BITMAP_BYTES = 512 * 1024 * 1024;
+const pendingPreviews = new Map<string, PendingPreview>();
 
 function getPreviewPort(): Promise<MessagePort> {
   if (previewPortPromise) return previewPortPromise;
@@ -140,12 +136,13 @@ function getPreviewPort(): Promise<MessagePort> {
       window.clearTimeout(timeoutId);
       const port = event.ports[0];
       port.onmessage = ({ data }: MessageEvent<PreviewPortResponse>) => {
-        const pending = pendingPreviews.get(data.requestId);
+        const key = `${data.requestId}:${data.quality}`;
+        const pending = pendingPreviews.get(key);
         if (!pending) return;
-        pendingPreviews.delete(data.requestId);
+        pendingPreviews.delete(key);
         window.clearTimeout(pending.timeoutId);
-        if (data.error || data.superseded) {
-          pending.reject(new Error(data.error ?? 'Preview request was superseded'));
+        if (data.error) {
+          pending.reject(new Error(data.error));
           return;
         }
         if (!data.width || !data.height || !data.stride || !data.engine) {
@@ -159,6 +156,7 @@ function getPreviewPort(): Promise<MessagePort> {
         );
         pending.resolve({
           requestId: data.requestId,
+          quality: data.quality,
           engine: data.engine,
           bitmap: {
             width: data.width,
@@ -181,43 +179,27 @@ function getPreviewPort(): Promise<MessagePort> {
 async function renderPreviewThroughPort(
   request: EngineWorkerRenderRequest,
 ): Promise<EngineWorkerRenderResponse> {
-  const port = await getPreviewPort();
-  for (const [requestId, pending] of pendingPreviews) {
-    if (requestId < request.requestId) {
-      pending.reject(new Error('Preview request was superseded'));
-      window.clearTimeout(pending.timeoutId);
-      pendingPreviews.delete(requestId);
-    }
+  if (typeof SharedArrayBuffer !== 'function' || !window.crossOriginIsolated) {
+    throw new Error('SharedArrayBuffer is unavailable (cross-origin isolation is disabled)');
   }
+  const port = await getPreviewPort();
+  const key = `${request.requestId}:${request.quality}`;
   const byteLength = request.preview.maxWidth * request.preview.maxHeight * 4;
-  const shared = typeof SharedArrayBuffer === 'function';
-  const buffer = shared ? new SharedArrayBuffer(byteLength) : new ArrayBuffer(byteLength);
+  const buffer = new SharedArrayBuffer(byteLength);
   const response = new Promise<EngineWorkerRenderResponse>((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
-      pendingPreviews.delete(request.requestId);
+      pendingPreviews.delete(key);
       reject(new Error('Shared preview request timed out'));
-    }, 3000);
-    pendingPreviews.set(request.requestId, {
-      buffer: shared ? buffer as SharedArrayBuffer : null,
+    }, request.quality === 'proxy' ? 5000 : 60000);
+    pendingPreviews.set(key, {
+      buffer,
       timeoutId,
       resolve,
       reject,
     });
   });
-  if (shared) port.postMessage({ request, buffer });
-  else port.postMessage({ request, buffer }, [buffer as ArrayBuffer]);
+  port.postMessage({ request, buffer });
   return response;
-}
-
-async function renderPreviewWithFallback(
-  request: EngineWorkerRenderRequest,
-): Promise<EngineWorkerRenderResponse> {
-  try {
-    return await renderPreviewThroughPort(request);
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('superseded')) throw error;
-    return window.rawElectron.engineWorker.renderPreview(request);
-  }
 }
 
 const filmItems = [
@@ -602,57 +584,51 @@ function App() {
     setRenderedPreviewBitmap(null);
     setPreviewError(null);
     let cancelled = false;
-    let fullRenderTimeout: number | undefined;
+    let originalPresented = false;
+    let failureCount = 0;
+    const requestId = engineRequestId.current + 1;
+    engineRequestId.current = requestId;
+    const targetWidth = Math.max(1, Math.min(selectedImage.width, viewportPixels.width));
+    const targetHeight = Math.max(1, Math.min(selectedImage.height, viewportPixels.height));
 
-    const renderBitmap = async (maxWidth: number, maxHeight: number) => {
-      const requestId = engineRequestId.current + 1;
-      engineRequestId.current = requestId;
-      return renderPreviewWithFallback({
+    const renderBitmap = (quality: 'proxy' | 'original') => {
+      return renderPreviewThroughPort({
         requestId,
         imageId: selectedImage.id,
+        quality,
         params: editParams,
-        preview: { maxWidth, maxHeight },
+        preview: { maxWidth: targetWidth, maxHeight: targetHeight },
       });
     };
 
-    const proxyRenderTimeout = window.setTimeout(async () => {
-      try {
-        const proxyWidth = Math.max(1, Math.ceil(viewportPixels.width / 2));
-        const proxyHeight = Math.max(1, Math.ceil(viewportPixels.height / 2));
-        const proxy = await renderBitmap(proxyWidth, proxyHeight);
-        if (cancelled || proxy.requestId !== engineRequestId.current) return;
-        setRenderedPreviewBitmap(proxy.bitmap);
-
-        const fullWidth = Math.min(selectedImage.width, viewportPixels.width);
-        const fullHeight = Math.min(selectedImage.height, viewportPixels.height);
-        const needsFullBitmap = fullWidth > proxy.bitmap.width || fullHeight > proxy.bitmap.height;
-        const fullBitmapBytes = fullWidth * fullHeight * 4;
-        if (!needsFullBitmap || fullBitmapBytes > MAX_FULL_BITMAP_BYTES) return;
-
-        // Give React a frame to present the proxy before requesting the full bitmap.
-        fullRenderTimeout = window.setTimeout(async () => {
-          try {
-            const full = await renderBitmap(fullWidth, fullHeight);
-            if (!cancelled && full.requestId === engineRequestId.current) {
-              setRenderedPreviewBitmap(full.bitmap);
-            }
-          } catch {
-            // Keep the proxy when a full render is superseded or fails.
-          }
-        }, 50);
-      } catch (error) {
-        if (!cancelled) {
-          setPreviewError(
-            `파일은 로드됐지만 Preview를 생성하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
+    const handleFailure = (quality: 'proxy' | 'original', error: unknown) => {
+      failureCount += 1;
+      if (!cancelled && failureCount === 2) {
+        setPreviewError(
+          `${quality} Preview 생성 실패: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
-    }, 20);
+    };
+
+    // Both pipelines start together. The proxy normally wins the first frame;
+    // the original-derived preview replaces it only when its full pipeline ends.
+    void renderBitmap('proxy')
+      .then((proxy) => {
+        if (cancelled || originalPresented || proxy.requestId !== engineRequestId.current) return;
+        setRenderedPreviewBitmap(proxy.bitmap);
+      })
+      .catch((error) => handleFailure('proxy', error));
+
+    void renderBitmap('original')
+      .then((original) => {
+        if (cancelled || original.requestId !== engineRequestId.current) return;
+        originalPresented = true;
+        setRenderedPreviewBitmap(original.bitmap);
+      })
+      .catch((error) => handleFailure('original', error));
 
     return () => {
       cancelled = true;
-      window.clearTimeout(proxyRenderTimeout);
-      if (fullRenderTimeout !== undefined) window.clearTimeout(fullRenderTimeout);
     };
   }, [selectedImage, editParams, viewportPixels]);
 

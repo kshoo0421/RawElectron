@@ -62,6 +62,7 @@ export type EditParams = {
 export type EngineWorkerRenderRequest = {
   requestId: number;
   imageId: number;
+  quality: 'proxy' | 'original';
   params: EditParams;
   preview: {
     maxWidth: number;
@@ -71,6 +72,7 @@ export type EngineWorkerRenderRequest = {
 
 export type EngineWorkerRenderResponse = {
   requestId: number;
+  quality: 'proxy' | 'original';
   bitmap: {
     width: number;
     height: number;

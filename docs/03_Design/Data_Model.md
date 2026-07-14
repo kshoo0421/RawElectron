@@ -34,6 +34,7 @@ Project
     ├── Image Document
     │       │
     │       ├── Original Image
+    │       ├── Proxy Image
     │       ├── Preview Image
     │       ├── Metadata
     │       └── Edit State
@@ -69,6 +70,7 @@ Project는 이미지 자체를 저장하지 않는다.
 포함 정보
 
 - Original Image
+- Proxy Image
 - Preview
 - Metadata
 - Edit State
@@ -104,6 +106,10 @@ Project는 이미지 자체를 저장하지 않는다.
 - Pixel Format
 
 Preview는 Engine이 생성한다.
+
+Proxy Image는 Image Open 시 Original Image에서 한 번 생성하는 저해상도 작업 이미지이다.
+Preview Image는 편집 상태가 적용된 화면 출력 결과이며 Proxy 기반 결과와 Original 기반 고품질 결과를 포함할 수 있다.
+Original, Proxy, Preview의 소유자는 모두 Engine이고 UI는 Preview용 Shared Buffer의 View만 사용한다.
 
 ---
 

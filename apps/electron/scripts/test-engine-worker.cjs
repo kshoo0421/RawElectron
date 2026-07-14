@@ -3,8 +3,10 @@ const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 
 const worker = new Worker(path.resolve(__dirname, '..', '.vite', 'build', 'engineHost.js'));
+const originalWorker = new Worker(path.resolve(__dirname, '..', '.vite', 'build', 'engineHost.js'));
 let nextId = 1;
 const pending = new Map();
+const originalPending = new Map();
 
 worker.on('message', (message) => {
   const command = pending.get(message.id);
@@ -14,11 +16,27 @@ worker.on('message', (message) => {
   else command.resolve(message.result);
 });
 
+originalWorker.on('message', (message) => {
+  const command = originalPending.get(message.id);
+  if (!command) return;
+  originalPending.delete(message.id);
+  if (message.error) command.reject(new Error(message.error));
+  else command.resolve(message.result);
+});
+
 function call(type, payload) {
   const id = nextId++;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
     worker.postMessage({ id, type, payload });
+  });
+}
+
+function callOriginal(type, payload) {
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    originalPending.set(id, { resolve, reject });
+    originalWorker.postMessage({ id, type, payload });
   });
 }
 
@@ -32,6 +50,7 @@ async function main() {
     request: {
       requestId: 91,
       imageId,
+      quality: 'proxy',
       params: { exposure: 0.1, contrast: 3, saturation: 5 },
       preview: { maxWidth: 320, maxHeight: 240 },
     },
@@ -42,10 +61,11 @@ async function main() {
     throw new Error('Worker did not write a valid shared RGBA8 preview');
   }
   const fullBuffer = new SharedArrayBuffer(opened.width * opened.height * 4);
-  const full = await call('renderPreviewShared', {
+  const full = await callOriginal('renderPreviewShared', {
     request: {
       requestId: 92,
       imageId,
+      quality: 'original',
       params: { exposure: 0.1, contrast: 3, saturation: 5 },
       preview: { maxWidth: opened.width, maxHeight: opened.height },
     },
@@ -71,7 +91,7 @@ async function main() {
 }
 
 main()
-  .finally(() => worker.terminate())
+  .finally(() => Promise.all([worker.terminate(), originalWorker.terminate()]))
   .catch((error) => {
     console.error(error);
     process.exitCode = 1;

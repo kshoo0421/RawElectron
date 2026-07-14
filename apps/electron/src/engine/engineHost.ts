@@ -37,7 +37,7 @@ port.on('message', (command: EngineCommand) => {
         break;
       case 'renderPreview': {
         const preview = addon.renderPreview(command.payload);
-        result = preview;
+        result = { ...preview, quality: command.payload.quality };
         transferList = [preview.data.buffer];
         break;
       }
@@ -52,6 +52,7 @@ port.on('message', (command: EngineCommand) => {
         });
         result = {
           requestId: preview.requestId,
+          quality: command.payload.request.quality,
           width: preview.width,
           height: preview.height,
           stride: preview.stride,
