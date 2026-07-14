@@ -455,7 +455,7 @@ test/                단위 및 통합 테스트
 각 엔진 모듈은 자체 `include/`와 `src/`를 가지며, 다른 모듈의 `src/`를 참조하지
 않는다. 모듈 간 사용은 공개 헤더와 CMake target을 통해서만 이루어진다.
 
-루트의 `build.py`가 CMake/Ninja 엔진 빌드, native addon 빌드, Electron 패키징의
+루트의 `build.py`가 플랫폼별 OpenCV/NASM 준비, CMake/Ninja 엔진 빌드, native addon 빌드, Electron 패키징의
 단일 진입점이다.
 
 ---

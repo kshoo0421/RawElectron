@@ -9,11 +9,31 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import fs from 'node:fs';
 import path from 'node:path';
 
+const findNativeRuntimeLibraries = (root: string): string[] => {
+  if (!fs.existsSync(root)) return [];
+  const results: string[] = [];
+  const queue = [root];
+  while (queue.length) {
+    const current = queue.shift()!;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) queue.push(entryPath);
+      else if (/^opencv_.*\.dll$/i.test(entry.name) || /^libopencv_.*\.(dylib|so(?:\..*)?)$/i.test(entry.name)) {
+        results.push(entryPath);
+      }
+    }
+  }
+  return results;
+};
+
+const opencvInstallRoot = path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install');
+
 const nativeResourceCandidates = [
   path.resolve(__dirname, 'native', 'build', 'Release', 'rawelectron_engine.node'),
   path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin', 'opencv_core4100.dll'),
   path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin', 'opencv_imgcodecs4100.dll'),
   path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin', 'opencv_imgproc4100.dll'),
+  ...findNativeRuntimeLibraries(opencvInstallRoot),
 ].filter((resourcePath) => fs.existsSync(resourcePath));
 
 const config: ForgeConfig = {

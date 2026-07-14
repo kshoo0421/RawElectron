@@ -15,8 +15,9 @@ LibRaw.
 | `libjpeg-turbo` | 3.1.4.1 | Codec | Direct JPEG path |
 | `libpng` | 1.6.54 | Codec | Direct PNG path |
 | `libtiff` | 4.7.1 | Codec | TIFF decode/export |
-| `libavif` | 1.4.2 | Codec | Requires AOM, dav1d, or another AV1 codec |
+| `libavif` | 1.4.2 | Codec | AVIF container and API |
 | `dav1d` | 1.5.3 | Codec | AVIF decode backend selected for libavif |
+| `nasm` | 3.01 | Build tool | Builds dav1d x86/x64 SIMD assembly |
 | `jxrlib` | 2019.10.9 | Codec | Legacy build system requires an adapter |
 
 `ThirdPartyVersions.cmake` publishes a stable `RAWELECTRON_*_ROOT` cache path
@@ -24,20 +25,43 @@ for each source tree. AVIF decoding is wired into `rawelectron_codec` with
 libavif and dav1d; upstream applications and tests are disabled. dav1d is a
 decoder only, so AVIF export will require a separate encoder later.
 
-The dav1d build requires Meson and Ninja. The repository pins the verified
-Meson version in `requirements-build.txt`; install it once with:
+The native build compiles the vendored NASM source with MSVC/NMAKE before
+configuring dav1d. Meson then detects that executable and enables dav1d's
+x86/x64 assembly optimizations. Meson itself is pinned in
+`requirements-build.txt`; install it once with:
 
 ```powershell
 python -m pip install -r requirements-build.txt
 ```
 
-NASM is optional. When it is absent, the build remains functional but dav1d
-uses portable C code and AVIF decoding is slower. Set
-`RAWELECTRON_ENABLE_AVIF=OFF` only when intentionally building without AVIF.
+On macOS, `build.py` builds a native OpenCV installation under
+`third_party/opencv/install/macos-arm64` or `macos-x64`. Intel Macs also build
+the vendored NASM with CMake; Apple Silicon uses dav1d's ARM assembly directly
+and does not require NASM. The Electron addon is rebuilt with Apple Clang, and
+OpenCV dylibs are copied into the packaged app Resources directory with an
+`@loader_path` runtime search path. Windows `.lib`, `.dll`, `.obj` and MSVC
+settings are never consumed by the macOS build.
 
-Third-party headers remain private implementation details of their owning
-module: LibRaw/Exiv2 belong to `Codec`, OpenCV to `Processing`/`Renderer`, and
-Little CMS to color management.
+Platform prerequisites are intentionally limited to the native developer
+toolchain: Xcode Command Line Tools on macOS, plus Python 3, CMake, Ninja,
+Node.js/npm and the pinned Meson package. All image-library sources themselves
+are vendored in this repository.
+
+Set `RAWELECTRON_ENABLE_AVIF=OFF` only when intentionally building without
+AVIF. Third-party headers remain private implementation details of their
+owning modules.
+
+For AVIF export, libaom is the default planned encoder because libavif supports
+it directly for both encoding and decoding and it offers mature still-image
+quality controls. rav1e is a reasonable quality-focused alternative but adds a
+Rust toolchain, while SVT-AV1 is primarily attractive for high-throughput AV1
+video workloads. dav1d remains the dedicated decode path.
+
+The Windows build intentionally combines MSVC-compiled C/C++ with NASM output.
+NASM emits Win64 COFF objects, so these can be linked into the same static
+dav1d library. Keep architecture, MSVC runtime (`/MD` versus `/MT`), build
+configuration and linker settings consistent across dependencies; do not mix
+MinGW runtime libraries into this MSVC build.
 
 Recommended layout:
 

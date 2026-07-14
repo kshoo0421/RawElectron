@@ -2,6 +2,7 @@
 
 apps/electron/.vite/
 apps/electron/native/build/
+apps/electron/native/opencv.gypi
 apps/electron/node_modules/
 apps/electron/out/
 build/
@@ -10,3 +11,9 @@ third_party/opencv/build/
 third_party/*/build/
 third_party/*/install/
 third_party/*/.cache/
+third_party/nasm/**/*.obj
+third_party/nasm/*.exe
+third_party/nasm/*.lib
+third_party/nasm/*.pdb
+third_party/nasm/*.ilk
+third_party/nasm/msvc.dep

@@ -78,7 +78,7 @@ function(avif_build_local_dav1d)
     file(MAKE_DIRECTORY ${install_dir}/include)
 
     find_program(NASM_EXECUTABLE nasm)
-    if(NASM_EXECUTABLE)
+    if(NASM_EXECUTABLE OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|i.86)$")
         set(DAV1D_ENABLE_ASM true)
     else()
         set(DAV1D_ENABLE_ASM false)

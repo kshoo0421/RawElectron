@@ -26,6 +26,10 @@
         "VCCLCompilerTool": {
           "AdditionalOptions": ["/std:c++20", "/EHsc"]
         }
+      },
+      "xcode_settings": {
+        "CLANG_CXX_LANGUAGE_STANDARD": "c++20",
+        "LD_RUNPATH_SEARCH_PATHS": ["@loader_path", "@executable_path/../Resources"]
       }
     }
   ]

@@ -10,9 +10,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(RAWELECTRON_BUILD_TESTS "Build engine tests" ON)
 option(RAWELECTRON_ENABLE_AVIF "Build AVIF decoding with vendored libavif and dav1d" ON)
+set(RAWELECTRON_OPENCV_INSTALL_DIR "${CMAKE_SOURCE_DIR}/third_party/opencv/install" CACHE PATH "OpenCV install prefix")
 
 find_package(OpenCV REQUIRED CONFIG
-  PATHS "${CMAKE_SOURCE_DIR}/third_party/opencv/install"
+  PATHS "${RAWELECTRON_OPENCV_INSTALL_DIR}"
   NO_DEFAULT_PATH
   COMPONENTS core imgcodecs imgproc
 )
