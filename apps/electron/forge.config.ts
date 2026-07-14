@@ -6,6 +6,7 @@ import { MakerRpm } from '@electron-forge/maker-rpm';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -39,9 +40,30 @@ const nativeResourceCandidates = [
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    osxSign: {
+      identity: '-',
+    },
     extraResource: nativeResourceCandidates,
   },
   rebuildConfig: {},
+  hooks: {
+    postPackage: async (_forgeConfig, packageResult) => {
+      if (process.platform !== 'darwin' || packageResult.platform !== 'darwin') return;
+
+      for (const outputPath of packageResult.outputPaths) {
+        const appPath = path.join(outputPath, 'rawelectron.app');
+        if (!fs.existsSync(appPath)) continue;
+
+        const result = spawnSync('codesign', ['--force', '--deep', '--sign', '-', appPath], {
+          stdio: 'inherit',
+        });
+        if (result.error) throw result.error;
+        if (result.status !== 0) {
+          throw new Error(`codesign failed for ${appPath} with exit code ${result.status}`);
+        }
+      }
+    },
+  },
   makers: [
     new MakerSquirrel({}),
     new MakerZIP({}, ['darwin']),

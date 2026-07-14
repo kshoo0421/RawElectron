@@ -22,6 +22,7 @@
       ],
       "defines": ["NAPI_VERSION=8"],
       "cflags_cc": ["-std=c++20"],
+      "cflags_cc!": ["-fno-exceptions"],
       "msvs_settings": {
         "VCCLCompilerTool": {
           "AdditionalOptions": ["/std:c++20", "/EHsc"]
@@ -29,6 +30,7 @@
       },
       "xcode_settings": {
         "CLANG_CXX_LANGUAGE_STANDARD": "c++20",
+        "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
         "LD_RUNPATH_SEARCH_PATHS": ["@loader_path", "@executable_path/../Resources"]
       }
     }

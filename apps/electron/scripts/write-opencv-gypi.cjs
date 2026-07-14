@@ -44,6 +44,14 @@ function walkForFiles(root, predicate, limit = 2000) {
 }
 
 function candidateRoots() {
+  const installRoot = path.join(thirdPartyDir, 'opencv', 'install');
+  const platformInstallRoot =
+    process.platform === 'darwin'
+      ? path.join(installRoot, `macos-${process.arch === 'x64' ? 'x64' : process.arch}`)
+      : process.platform === 'linux'
+        ? path.join(installRoot, `linux-${process.arch === 'x64' ? 'x64' : process.arch}`)
+        : null;
+
   const envRoots = [
     process.env.RAWELECTRON_OPENCV_DIR,
     process.env.OpenCV_DIR,
@@ -51,9 +59,10 @@ function candidateRoots() {
   ];
 
   const vendoredRoots = [
+    platformInstallRoot,
     path.join(thirdPartyDir, 'opencv'),
     path.join(thirdPartyDir, 'opencv', 'build'),
-    path.join(thirdPartyDir, 'opencv', 'install'),
+    installRoot,
   ];
 
   const commonRoots =
@@ -67,10 +76,15 @@ function candidateRoots() {
 function findIncludeDir(root) {
   const candidates = [
     path.join(root, 'install', 'include'),
+    path.join(root, 'install', 'include', 'opencv4'),
     path.join(root, 'build', 'install', 'include'),
+    path.join(root, 'build', 'install', 'include', 'opencv4'),
     path.join(root, 'include'),
+    path.join(root, 'include', 'opencv4'),
     path.join(root, '..', '..', 'include'),
+    path.join(root, '..', '..', 'include', 'opencv4'),
     path.join(root, '..', 'include'),
+    path.join(root, '..', 'include', 'opencv4'),
   ];
 
   return candidates.find((candidate) => exists(path.join(candidate, 'opencv2', 'opencv.hpp'))) ?? null;
