@@ -418,3 +418,31 @@ Save
 | Version | Date | Description |
 |----------|------|-------------|
 | 0.1 | YYYY-MM-DD | Initial Draft |
+
+---
+
+# 19. Verified Preview Transport Constraints (2026-07-14)
+
+The test image `6000 x 4000` decoded and rendered correctly inside the native Worker:
+
+- open/decode: approximately 278 ms;
+- 1200 px Proxy shared render: approximately 32 ms;
+- 1200 px Original shared render: approximately 239 ms.
+
+The blank preview is therefore not caused by JPEG decoding or processing performance. It occurs after rendering, at the Electron process boundary: a Renderer-created SAB is not preserved when posted to `MessagePortMain`.
+
+Preview implementations must include an Electron end-to-end transport test. A Worker-only shared-memory test is insufficient because it does not exercise Renderer/Main serialization.
+
+## Temporary preview file implementation
+
+The current safe fallback renders an encoded PNG in the native Engine Worker and writes it under the application preview cache directory. Electron IPC returns only metadata and a `rawelectron://preview/...` URL; pixel bytes are never returned as an IPC payload.
+
+Editing uses draft state:
+
+- slider changes render a Proxy-derived preview;
+- the previously presented file remains visible until the replacement file is complete;
+- Cancel restores the last committed edit state;
+- Confirm commits the draft state and requests an Original-derived preview;
+- source files remain unchanged until Export.
+
+Preview URLs contain `ImageId`, quality, and render generation. Responses use `Cache-Control: no-store`, and the custom protocol only serves validated preview filenames from the dedicated cache directory.

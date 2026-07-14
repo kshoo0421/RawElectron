@@ -409,3 +409,32 @@ IPC는 다음 기능을 추가할 수 있어야 한다.
 | Version | Date | Description |
 |----------|------|-------------|
 | 0.1 | YYYY-MM-DD | Initial Draft |
+
+---
+
+# 18. Electron Shared Preview Boundary (2026-07-14)
+
+Electron `MessagePortMain` must not be used to carry `SharedArrayBuffer`. Testing with Electron 43 showed the following behavior:
+
+- ordinary control metadata reaches Main normally;
+- a message containing a Renderer-created `SharedArrayBuffer` arrives at Main with `event.data === null`;
+- therefore pixel storage cannot cross the Renderer/Main process boundary through `MessagePortMain`.
+
+The current Main-side preview path is retained only as a documented failing baseline until a replacement transport is selected. Pixel buffers must never fall back to ordinary `ipcRenderer.invoke()` payloads.
+
+Security experiment results:
+
+- `sandbox: false` allows a preload to load Node/native modules;
+- Electron Renderer V8 does not support creating `node:worker_threads.Worker` from that preload;
+- with `contextIsolation: true`, Context Bridge cannot clone a `SharedArrayBuffer` (`An object could not be cloned`);
+- consequently, disabling only the sandbox does not make a Renderer SAB available to a native preload worker.
+
+Supported next-step candidates are:
+
+1. native OS shared memory or a native/GPU surface with an explicit Renderer bridge;
+2. a temporary encoded preview file while keeping the Renderer sandboxed;
+3. disabling context isolation as an explicit additional security decision, followed by a native asynchronous render implementation.
+
+Option 3 must not be implemented implicitly because it materially weakens the Electron security boundary.
+
+The selected interim transport is a temporary encoded preview file. The native Worker writes the file directly; IPC carries only the render request and the resulting preview URL/metadata. This preserves the forbidden-pixel-payload rule while keeping Electron sandbox and context isolation enabled.

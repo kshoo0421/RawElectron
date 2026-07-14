@@ -9,6 +9,7 @@ type EngineCommand =
   | { id: number; type: 'openImage'; payload: { imagePath: string } }
   | { id: number; type: 'closeImage'; payload: { imageId: number } }
   | { id: number; type: 'renderPreview'; payload: EngineWorkerRenderRequest }
+  | { id: number; type: 'renderPreviewFile'; payload: { request: EngineWorkerRenderRequest; outputPath: string } }
   | {
       id: number;
       type: 'renderPreviewShared';
@@ -61,6 +62,12 @@ port.on('message', (command: EngineCommand) => {
         };
         break;
       }
+      case 'renderPreviewFile':
+        result = {
+          ...addon.renderPreviewFile(command.payload.request, command.payload.outputPath),
+          quality: command.payload.request.quality,
+        };
+        break;
       case 'exportImage':
         result = addon.exportRenderedImage(command.payload);
         break;

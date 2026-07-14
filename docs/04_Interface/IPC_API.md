@@ -380,3 +380,19 @@ IPC API는 버전 정보를 포함한다.
 | Version | Date | Description |
 |----------|------|-------------|
 | 0.1 | YYYY-MM-DD | Initial Draft |
+
+---
+
+# 18. Shared Buffer Transport Restriction (2026-07-14)
+
+`SharedArrayBuffer` is not a valid RawElectron Main IPC payload. The following are forbidden:
+
+```text
+Renderer SAB -> MessagePortMain -> Main Worker
+Renderer SAB -> ipcRenderer.invoke -> Main
+Preview pixels -> ordinary IPC response
+```
+
+IPC remains limited to commands and metadata such as `ImageId`, render generation, quality, dimensions, status, and errors. Any future shared-preview implementation must prove that both the native renderer and the UI map the same storage without serializing pixel bytes through Electron IPC.
+
+The interim `engine-preview-file:render` request contains `ImageId`, request generation, quality, edit parameters, and target dimensions. Its response contains request generation, quality, dimensions, and a validated `rawelectron://preview/...` URL. The PNG file contents are not part of the IPC response.

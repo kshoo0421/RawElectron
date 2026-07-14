@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <rawelectron/ipc/engine_bridge.hpp>
+#include <rawelectron/codec/codec.hpp>
 
 namespace {
 constexpr bool kOpenCvEnabled = true;
@@ -307,6 +309,69 @@ napi_value RenderPreviewInto(napi_env env, napi_callback_info info) {
   }
 }
 
+napi_value RenderPreviewFile(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  Check(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "Failed to read renderPreviewFile arguments");
+  if (argc < 2) {
+    napi_throw_type_error(env, nullptr, "renderPreviewFile requires a request and output path");
+    return nullptr;
+  }
+  try {
+    napi_value request = args[0];
+    const int32_t request_id = GetIntProperty(env, request, "requestId");
+    const auto image_id = GetImageIdProperty(env, request);
+    const auto preview_source = ReadPreviewSource(env, request);
+    const EditParams params = ReadEditParams(env, request);
+    rawelectron::image_core::Adjustment adjustment;
+    adjustment.exposure = params.exposure;
+    adjustment.contrast = params.contrast;
+    adjustment.saturation = params.saturation;
+    ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, adjustment));
+
+    napi_value path_value = args[1];
+    size_t path_length = 0;
+    Check(env, napi_get_value_string_utf8(env, path_value, nullptr, 0, &path_length), "Failed to measure output path");
+    std::string output_path(path_length + 1, '\0');
+    Check(env, napi_get_value_string_utf8(env, path_value, output_path.data(), output_path.size(), &path_length), "Failed to read output path");
+    output_path.resize(path_length);
+
+    int32_t max_width = 1600;
+    int32_t max_height = 1200;
+    if (HasProperty(env, request, "preview")) {
+      napi_value preview = GetProperty(env, request, "preview");
+      max_width = GetIntProperty(env, preview, "maxWidth", max_width);
+      max_height = GetIntProperty(env, preview, "maxHeight", max_height);
+    }
+    rawelectron::image_core::Bitmap bitmap;
+    ThrowIfFailed(env, rawelectron::ipc::render_preview(
+        image_id,
+        {static_cast<std::uint32_t>(std::max(1, max_width)), static_cast<std::uint32_t>(std::max(1, max_height))},
+        bitmap,
+        preview_source));
+    std::vector<std::uint8_t> png;
+    ThrowIfFailed(env, rawelectron::codec::encode_png(bitmap, png));
+    std::ofstream stream(output_path, std::ios::binary | std::ios::trunc);
+    if (!stream) throw std::runtime_error("Failed to open preview output file");
+    stream.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    if (!stream) throw std::runtime_error("Failed to write preview output file");
+
+    napi_value result;
+    Check(env, napi_create_object(env, &result), "Failed to create preview file result");
+    napi_value value;
+    Check(env, napi_create_int32(env, request_id, &value), "Failed to create requestId");
+    Check(env, napi_set_named_property(env, result, "requestId", value), "Failed to set requestId");
+    Check(env, napi_create_uint32(env, bitmap.size.width, &value), "Failed to create width");
+    Check(env, napi_set_named_property(env, result, "width", value), "Failed to set width");
+    Check(env, napi_create_uint32(env, bitmap.size.height, &value), "Failed to create height");
+    Check(env, napi_set_named_property(env, result, "height", value), "Failed to set height");
+    return result;
+  } catch (const std::exception& error) {
+    napi_throw_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
+
 napi_value ExportRenderedImage(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
@@ -551,8 +616,9 @@ napi_value Init(napi_env env, napi_value exports) {
       {"openImage", nullptr, OpenImage, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"closeImage", nullptr, CloseImage, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"renderPreviewInto", nullptr, RenderPreviewInto, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"renderPreviewFile", nullptr, RenderPreviewFile, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
-  Check(env, napi_define_properties(env, exports, 3, engine_properties), "Failed to export engine functions");
+  Check(env, napi_define_properties(env, exports, 4, engine_properties), "Failed to export engine functions");
 
   napi_property_descriptor bitmap_properties[] = {
       {"createSharedBitmap", nullptr, CreateSharedBitmap, nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -92,6 +92,14 @@ export class EngineWorker {
     return worker.call<SharedPreviewResult>('renderPreviewShared', { request, buffer });
   }
 
+  renderPreviewFile(request: EngineWorkerRenderRequest, outputPath: string) {
+    const worker = request.quality === 'original' ? this.originalWorker : this.interactiveWorker;
+    return worker.call<{ requestId: number; quality: 'proxy' | 'original'; width: number; height: number }>(
+      'renderPreviewFile',
+      { request, outputPath },
+    );
+  }
+
   exportRenderedImage(request: EngineWorkerExportRequest) {
     return this.call<{ path: string }>('exportImage', request);
   }

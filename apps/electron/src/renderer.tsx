@@ -37,7 +37,6 @@ import {
 import type {
   EditParams,
   EngineWorkerRenderRequest,
-  EngineWorkerRenderResponse,
 } from './shared/engineTypes';
 import './index.css';
 
@@ -83,8 +82,6 @@ type ImageFile = {
   pixelFormat: 'rgba8';
 };
 
-type PreviewBitmap = EngineWorkerRenderResponse['bitmap'];
-
 declare global {
   interface Window {
     rawElectron: {
@@ -93,113 +90,18 @@ declare global {
         imageId: number,
         params: EditParams,
       ) => Promise<{ canceled: boolean; path?: string }>;
-      connectPreviewPort: () => void;
+      renderPreviewFile: (request: EngineWorkerRenderRequest) => Promise<{
+        requestId: number;
+        quality: 'proxy' | 'original';
+        width: number;
+        height: number;
+        url: string;
+      }>;
       engineWorker: {
         exportRenderedImage: (request: unknown) => Promise<{ path: string }>;
       };
     };
   }
-}
-
-type PreviewPortResponse = {
-  requestId: number;
-  quality: 'proxy' | 'original';
-  width?: number;
-  height?: number;
-  stride?: number;
-  engine?: EngineWorkerRenderResponse['engine'];
-  data?: Uint8ClampedArray;
-  error?: string;
-};
-
-type PendingPreview = {
-  buffer: SharedArrayBuffer | null;
-  timeoutId: number;
-  resolve: (response: EngineWorkerRenderResponse) => void;
-  reject: (error: Error) => void;
-};
-
-let previewPortPromise: Promise<MessagePort> | null = null;
-const pendingPreviews = new Map<string, PendingPreview>();
-
-function getPreviewPort(): Promise<MessagePort> {
-  if (previewPortPromise) return previewPortPromise;
-  previewPortPromise = new Promise((resolve, reject) => {
-    const timeoutId = window.setTimeout(() => {
-      window.removeEventListener('message', handlePort);
-      previewPortPromise = null;
-      reject(new Error('Preview MessagePort connection timed out'));
-    }, 1500);
-    const handlePort = (event: MessageEvent) => {
-      if (event.data?.type !== 'engine-preview-port' || !event.ports[0]) return;
-      window.removeEventListener('message', handlePort);
-      window.clearTimeout(timeoutId);
-      const port = event.ports[0];
-      port.onmessage = ({ data }: MessageEvent<PreviewPortResponse>) => {
-        const key = `${data.requestId}:${data.quality}`;
-        const pending = pendingPreviews.get(key);
-        if (!pending) return;
-        pendingPreviews.delete(key);
-        window.clearTimeout(pending.timeoutId);
-        if (data.error) {
-          pending.reject(new Error(data.error));
-          return;
-        }
-        if (!data.width || !data.height || !data.stride || !data.engine) {
-          pending.reject(new Error('Preview response metadata is incomplete'));
-          return;
-        }
-        const pixels = data.data ?? new Uint8ClampedArray(
-          pending.buffer as SharedArrayBuffer,
-          0,
-          data.stride * data.height,
-        );
-        pending.resolve({
-          requestId: data.requestId,
-          quality: data.quality,
-          engine: data.engine,
-          bitmap: {
-            width: data.width,
-            height: data.height,
-            stride: data.stride,
-            pixelFormat: 'rgba8',
-            data: pixels,
-          },
-        });
-      };
-      port.start();
-      resolve(port);
-    };
-    window.addEventListener('message', handlePort);
-    window.rawElectron.connectPreviewPort();
-  });
-  return previewPortPromise;
-}
-
-async function renderPreviewThroughPort(
-  request: EngineWorkerRenderRequest,
-): Promise<EngineWorkerRenderResponse> {
-  if (typeof SharedArrayBuffer !== 'function' || !window.crossOriginIsolated) {
-    throw new Error('SharedArrayBuffer is unavailable (cross-origin isolation is disabled)');
-  }
-  const port = await getPreviewPort();
-  const key = `${request.requestId}:${request.quality}`;
-  const byteLength = request.preview.maxWidth * request.preview.maxHeight * 4;
-  const buffer = new SharedArrayBuffer(byteLength);
-  const response = new Promise<EngineWorkerRenderResponse>((resolve, reject) => {
-    const timeoutId = window.setTimeout(() => {
-      pendingPreviews.delete(key);
-      reject(new Error('Shared preview request timed out'));
-    }, request.quality === 'proxy' ? 5000 : 60000);
-    pendingPreviews.set(key, {
-      buffer,
-      timeoutId,
-      resolve,
-      reject,
-    });
-  });
-  port.postMessage({ request, buffer });
-  return response;
 }
 
 const filmItems = [
@@ -480,11 +382,13 @@ function App() {
   const [activeTool, setActiveTool] = useState<ActiveTool>('edit');
   const [images, setImages] = useState<ImageFile[]>([]);
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
-  const [renderedPreviewBitmap, setRenderedPreviewBitmap] = useState<PreviewBitmap | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [viewportPixels, setViewportPixels] = useState({ width: 1280, height: 960 });
   const engineRequestId = useRef(0);
   const [sections, setSections] = useState<ToolSection[]>(editSections);
+  const [committedSections, setCommittedSections] = useState<ToolSection[]>(editSections);
+  const [renderQuality, setRenderQuality] = useState<'proxy' | 'original'>('original');
   const [maskControls, setMaskControls] = useState<ToolSection[]>(maskSections);
   const [removeSize, setRemoveSize] = useState(20);
   const [detectObjects, setDetectObjects] = useState(false);
@@ -504,6 +408,13 @@ function App() {
     effects: false,
     detail: false,
     optics: false,
+  });
+  const toolDraftBaseline = useRef({
+    maskControls,
+    removeSize,
+    detectObjects,
+    generativeAi,
+    selectedRatio,
   });
 
   useEffect(() => {
@@ -572,65 +483,70 @@ function App() {
       ),
     [sections, maskControls, selectedRatio, removeSize, detectObjects, generativeAi],
   );
+  const [renderParams, setRenderParams] = useState(editParams);
+  useEffect(() => {
+    const timeoutId = window.setTimeout(
+      () => setRenderParams(editParams),
+      renderQuality === 'proxy' ? 60 : 0,
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [editParams, renderQuality]);
   const isModalTool = activeTool === 'crop' || activeTool === 'remove' || activeTool === 'mask';
 
   useEffect(() => {
     if (!selectedImage) {
-      setRenderedPreviewBitmap(null);
+      setPreviewUrl(null);
       setPreviewError(null);
       return undefined;
     }
 
-    setRenderedPreviewBitmap(null);
     setPreviewError(null);
     let cancelled = false;
-    let originalPresented = false;
-    let failureCount = 0;
     const requestId = engineRequestId.current + 1;
     engineRequestId.current = requestId;
     const targetWidth = Math.max(1, Math.min(selectedImage.width, viewportPixels.width));
     const targetHeight = Math.max(1, Math.min(selectedImage.height, viewportPixels.height));
 
     const renderBitmap = (quality: 'proxy' | 'original') => {
-      return renderPreviewThroughPort({
+      return window.rawElectron.renderPreviewFile({
         requestId,
         imageId: selectedImage.id,
         quality,
-        params: editParams,
+        params: renderParams,
         preview: { maxWidth: targetWidth, maxHeight: targetHeight },
       });
     };
 
     const handleFailure = (quality: 'proxy' | 'original', error: unknown) => {
-      failureCount += 1;
-      if (!cancelled && failureCount === 2) {
+      if (!cancelled) {
         setPreviewError(
           `${quality} Preview 생성 실패: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     };
 
-    // Both pipelines start together. The proxy normally wins the first frame;
-    // the original-derived preview replaces it only when its full pipeline ends.
+    if (renderQuality === 'proxy') {
     void renderBitmap('proxy')
       .then((proxy) => {
-        if (cancelled || originalPresented || proxy.requestId !== engineRequestId.current) return;
-        setRenderedPreviewBitmap(proxy.bitmap);
+        if (cancelled || proxy.requestId !== engineRequestId.current) return;
+        setPreviewUrl(proxy.url);
       })
       .catch((error) => handleFailure('proxy', error));
+    }
 
+    if (renderQuality === 'original') {
     void renderBitmap('original')
       .then((original) => {
         if (cancelled || original.requestId !== engineRequestId.current) return;
-        originalPresented = true;
-        setRenderedPreviewBitmap(original.bitmap);
+        setPreviewUrl(original.url);
       })
       .catch((error) => handleFailure('original', error));
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [selectedImage, editParams, viewportPixels]);
+  }, [selectedImage, renderParams, viewportPixels, renderQuality]);
 
   const openImages = async () => {
     setPreviewError(null);
@@ -692,7 +608,7 @@ function App() {
         <Viewer
           images={images}
           selectedImage={selectedImage}
-          renderedPreviewBitmap={renderedPreviewBitmap}
+          previewUrl={previewUrl}
           previewError={previewError}
           onViewportPixelsChange={setViewportPixels}
           previewFilter={previewFilter}
@@ -712,13 +628,26 @@ function App() {
             onToggleSection={(sectionId) =>
               setOpenSections((current) => ({ ...current, [sectionId]: !current[sectionId] }))
             }
-            onSliderChange={(sectionId, controlId, value) =>
-              setSections((current) => updateSectionSlider(current, sectionId, controlId, value))
-            }
-            onToggleOption={(sectionId, controlId) =>
-              setSections((current) => updateSectionToggle(current, sectionId, controlId))
-            }
-            onReset={() => setSections(editSections)}
+            onSliderChange={(sectionId, controlId, value) => {
+              setRenderQuality('proxy');
+              setSections((current) => updateSectionSlider(current, sectionId, controlId, value));
+            }}
+            onToggleOption={(sectionId, controlId) => {
+              setRenderQuality('proxy');
+              setSections((current) => updateSectionToggle(current, sectionId, controlId));
+            }}
+            onReset={() => {
+              setRenderQuality('proxy');
+              setSections(editSections);
+            }}
+            onCancel={() => {
+              setSections(committedSections);
+              setRenderQuality('original');
+            }}
+            onConfirm={() => {
+              setCommittedSections(sections);
+              setRenderQuality('original');
+            }}
           />
         )}
         {activeTool === 'crop' && (
@@ -754,7 +683,19 @@ function App() {
             }
           />
         )}
-        <ToolRail activeTool={activeTool} onToolSelect={setActiveTool} />
+        <ToolRail activeTool={activeTool} onToolSelect={(tool) => {
+          if (tool !== 'edit') {
+            toolDraftBaseline.current = {
+              maskControls,
+              removeSize,
+              detectObjects,
+              generativeAi,
+              selectedRatio,
+            };
+            setRenderQuality('proxy');
+          }
+          setActiveTool(tool);
+        }} />
       </main>
       {isModalTool && (
         <div className="action-footer">
@@ -762,10 +703,22 @@ function App() {
             <RotateCcw size={22} />
           </button>
           <div className="action-footer-buttons">
-            <button className="ghost-action" onClick={() => setActiveTool('edit')}>
+            <button className="ghost-action" onClick={() => {
+              const baseline = toolDraftBaseline.current;
+              setMaskControls(baseline.maskControls);
+              setRemoveSize(baseline.removeSize);
+              setDetectObjects(baseline.detectObjects);
+              setGenerativeAi(baseline.generativeAi);
+              setSelectedRatio(baseline.selectedRatio);
+              setRenderQuality('original');
+              setActiveTool('edit');
+            }}>
               취소
             </button>
-            <button className="primary-action" onClick={() => setActiveTool('edit')}>
+            <button className="primary-action" onClick={() => {
+              setRenderQuality('original');
+              setActiveTool('edit');
+            }}>
               적용
             </button>
           </div>
@@ -909,33 +862,10 @@ function SettingsPopover({
   );
 }
 
-function BitmapCanvas({ bitmap, label }: { bitmap: PreviewBitmap; label: string }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || bitmap.pixelFormat !== 'rgba8' || bitmap.stride !== bitmap.width * 4) {
-      return;
-    }
-    const context = canvas.getContext('2d');
-    if (!context) {
-      return;
-    }
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    const pixels = bitmap.data instanceof Uint8ClampedArray
-      ? bitmap.data
-      : new Uint8ClampedArray(bitmap.data);
-    context.putImageData(new ImageData(pixels, bitmap.width, bitmap.height), 0, 0);
-  }, [bitmap]);
-
-  return <canvas ref={canvasRef} className="photo-img photo-canvas" role="img" aria-label={label} />;
-}
-
 function Viewer({
   images,
   selectedImage,
-  renderedPreviewBitmap,
+  previewUrl,
   previewError,
   onViewportPixelsChange,
   previewFilter,
@@ -946,7 +876,7 @@ function Viewer({
 }: {
   images: ImageFile[];
   selectedImage: ImageFile | null;
-  renderedPreviewBitmap: PreviewBitmap | null;
+  previewUrl: string | null;
   previewError: string | null;
   onViewportPixelsChange: (size: { width: number; height: number }) => void;
   previewFilter: React.CSSProperties;
@@ -977,8 +907,8 @@ function Viewer({
         <div className={`photo-frame ${activeTool === 'crop' && selectedImage ? 'crop-active' : ''}`}>
           {selectedImage ? (
             <div className="sample-photo loaded-photo" style={previewFilter} role="img" aria-label={selectedImage.name}>
-              {renderedPreviewBitmap ? (
-                <BitmapCanvas bitmap={renderedPreviewBitmap} label={selectedImage.name} />
+              {previewUrl ? (
+                <img src={previewUrl} className="photo-img" alt={selectedImage.name} />
               ) : (
                 <div className={`preview-loading ${previewError ? 'preview-error' : ''}`} role="status">
                   {previewError ?? '파일 로드 완료 · Proxy Preview 생성 중…'}
@@ -1172,6 +1102,8 @@ function EditPanel({
   onSliderChange,
   onToggleOption,
   onReset,
+  onCancel,
+  onConfirm,
 }: {
   title: string;
   sections: ToolSection[];
@@ -1180,6 +1112,8 @@ function EditPanel({
   onSliderChange: (sectionId: ToolSectionId, controlId: string, value: number) => void;
   onToggleOption: (sectionId: ToolSectionId, controlId: string) => void;
   onReset: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
 }) {
   return (
     <aside className="edit-panel" aria-label={`${title} 패널`}>
@@ -1212,6 +1146,8 @@ function EditPanel({
         <button className="icon-button" aria-label="전체 초기화" onClick={onReset}>
           <RotateCcw size={22} />
         </button>
+        <button className="panel-action-button" onClick={onCancel}>취소</button>
+        <button className="panel-action-button" onClick={onConfirm}>확인</button>
       </div>
     </aside>
   );

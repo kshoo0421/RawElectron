@@ -3,12 +3,12 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
-  MessageChannelMain,
   net,
   protocol,
   session,
 } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
 import { EngineWorker } from './engine/engineWorker';
@@ -36,6 +36,7 @@ if (started) {
 }
 
 const engineWorker = new EngineWorker();
+const previewRoot = path.join(app.getPath('temp'), 'RawElectron', 'preview');
 
 type ImageFile = {
   id: number;
@@ -98,31 +99,25 @@ ipcMain.handle('images:export', async (_event, imageId: number, params: EditPara
   return { canceled: false, path: result.filePath };
 });
 
-ipcMain.on('engine-preview-port:connect', (event) => {
-  const { port1, port2 } = new MessageChannelMain();
-
-  port2.on('message', async ({ data }) => {
-    const request = data.request as EngineWorkerRenderRequest;
-    const buffer = data.buffer as SharedArrayBuffer | ArrayBuffer;
-    try {
-      const result = await engineWorker.renderPreviewShared(request, buffer);
-      port2.postMessage(result);
-    } catch (error) {
-      port2.postMessage({
-        requestId: request.requestId,
-        quality: request.quality,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  });
-  port2.start();
-  event.senderFrame.postMessage('engine-preview-port', null, [port1]);
-});
-
 ipcMain.handle(
   'engine-worker:export-rendered-image',
   async (_event, request: EngineWorkerExportRequest) => engineWorker.exportRenderedImage(request),
 );
+
+ipcMain.handle('engine-preview-file:render', async (_event, request: EngineWorkerRenderRequest) => {
+  const width = request.preview?.maxWidth;
+  const height = request.preview?.maxHeight;
+  if (!Number.isSafeInteger(request.requestId) || !Number.isSafeInteger(request.imageId)
+      || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+      || width <= 0 || height <= 0 || width * height > 4096 * 4096) {
+    throw new Error('Invalid preview file request');
+  }
+  fs.mkdirSync(previewRoot, { recursive: true });
+  const fileName = `${request.imageId}-${request.quality}-${request.requestId}.png`;
+  const outputPath = path.join(previewRoot, fileName);
+  const result = await engineWorker.renderPreviewFile(request, outputPath);
+  return { ...result, url: `rawelectron://preview/${fileName}` };
+});
 
 const createWindow = () => {
   // Create the browser window.
@@ -135,9 +130,19 @@ const createWindow = () => {
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
+      devTools: !app.isPackaged,
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const allowedDevelopmentUrl = MAIN_WINDOW_VITE_DEV_SERVER_URL
+      && url.startsWith(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+    if (!url.startsWith('rawelectron://') && !allowedDevelopmentUrl) event.preventDefault();
+  });
 
   // and load the index.html of the app.
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -149,6 +154,9 @@ const createWindow = () => {
 };
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
   // Vite development responses need the isolation policy injected. Packaged
   // responses get the same policy from the custom protocol handler below.
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -167,7 +175,19 @@ app.whenReady().then(() => {
     `../renderer/${MAIN_WINDOW_VITE_NAME}`,
   );
   protocol.handle('rawelectron', async (request) => {
-    const relativePath = decodeURIComponent(new URL(request.url).pathname)
+    const parsedUrl = new URL(request.url);
+    if (parsedUrl.host === 'preview') {
+      const fileName = path.basename(decodeURIComponent(parsedUrl.pathname));
+      if (!/^\d+-(proxy|original)-\d+\.png$/.test(fileName)) {
+        return new Response('Not found', { status: 404 });
+      }
+      const response = await net.fetch(pathToFileURL(path.join(previewRoot, fileName)).toString());
+      const headers = new Headers(response.headers);
+      headers.set('Cache-Control', 'no-store');
+      headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+      return new Response(response.body, { status: response.status, headers });
+    }
+    const relativePath = decodeURIComponent(parsedUrl.pathname)
       .replace(/^\/+/, '') || 'index.html';
     const filePath = path.resolve(rendererRoot, relativePath);
     if (filePath !== rendererRoot && !filePath.startsWith(`${rendererRoot}${path.sep}`)) {

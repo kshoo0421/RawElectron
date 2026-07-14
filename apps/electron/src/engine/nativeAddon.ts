@@ -42,6 +42,10 @@ type NativeEngineAddon = {
     request: EngineWorkerRenderRequest,
     bitmap: SharedBitmap,
   ) => Omit<NativeRenderResponse, 'data'>;
+  renderPreviewFile: (
+    request: EngineWorkerRenderRequest,
+    outputPath: string,
+  ) => { requestId: number; width: number; height: number };
   exportRenderedImage: (request: EngineWorkerExportRequest) => { path: string };
 };
 
