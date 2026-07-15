@@ -56,7 +56,8 @@ image_core::Status write_file(const std::string& path, const std::vector<std::ui
 }
 }  // namespace
 
-image_core::Status OpenCvDecoder::decode(const std::string& path, image_core::Bitmap& output) {
+image_core::Status ImageDecoder::decode(const std::string& path, image_core::Bitmap& output) {
+  output.clear();
   std::vector<std::uint8_t> file_bytes;
   const auto read_status = read_file(path, file_bytes);
   if (!read_status.ok()) return read_status;
@@ -90,10 +91,8 @@ image_core::Status OpenCvDecoder::decode(const std::string& path, image_core::Bi
       avifDecoderDestroy(decoder);
       return {image_core::StatusCode::invalid_argument, std::string("AVIF RGB conversion failed: ") + avifResultToString(result)};
     }
-    output.size = {decoder->image->width, decoder->image->height};
-    output.format = image_core::PixelFormat::rgba8;
     const size_t row_size = static_cast<size_t>(decoder->image->width) * 4;
-    output.pixels.resize(row_size * decoder->image->height);
+    output.reset({decoder->image->width, decoder->image->height}, image_core::PixelFormat::rgba8);
     for (std::uint32_t row = 0; row < decoder->image->height; ++row) {
       std::copy_n(rgb.pixels + static_cast<size_t>(row) * rgb.rowBytes, row_size,
                   output.pixels.data() + static_cast<size_t>(row) * row_size);
@@ -142,9 +141,7 @@ image_core::Status OpenCvDecoder::decode(const std::string& path, image_core::Bi
       release();
       return {image_core::StatusCode::invalid_argument, "JPEG XR pixel decode failed"};
     }
-    output.size = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)};
-    output.format = image_core::PixelFormat::rgba8;
-    output.pixels.resize(bgra.size());
+    output.reset({static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)}, image_core::PixelFormat::rgba8);
     for (size_t pixel = 0; pixel < bgra.size(); pixel += 4) {
       output.pixels[pixel] = bgra[pixel + 2];
       output.pixels[pixel + 1] = bgra[pixel + 1];
@@ -187,9 +184,7 @@ image_core::Status OpenCvDecoder::decode(const std::string& path, image_core::Bi
       if (image) LibRaw::dcraw_clear_mem(image);
       return {image_core::StatusCode::invalid_argument, "LibRaw did not produce an 8-bit bitmap"};
     }
-    output.size = {image->width, image->height};
-    output.format = image_core::PixelFormat::rgba8;
-    output.pixels.resize(static_cast<size_t>(image->width) * image->height * 4);
+    output.reset({image->width, image->height}, image_core::PixelFormat::rgba8);
     for (size_t pixel = 0, count = static_cast<size_t>(image->width) * image->height; pixel < count; ++pixel) {
       output.pixels[pixel * 4] = image->data[pixel * image->colors];
       output.pixels[pixel * 4 + 1] = image->data[pixel * image->colors + 1];
@@ -203,7 +198,7 @@ image_core::Status OpenCvDecoder::decode(const std::string& path, image_core::Bi
 
   cv::Mat decoded = cv::imdecode(file_bytes, cv::IMREAD_UNCHANGED);
   if (decoded.empty()) {
-    return {image_core::StatusCode::invalid_argument, "Failed to decode image"};
+    return {image_core::StatusCode::unsupported_format, "No native decoder accepted this image"};
   }
 
   cv::Mat rgba;
@@ -229,9 +224,8 @@ image_core::Status OpenCvDecoder::decode(const std::string& path, image_core::Bi
   if (!rgba.isContinuous()) {
     rgba = rgba.clone();
   }
-  output.size = {static_cast<std::uint32_t>(rgba.cols), static_cast<std::uint32_t>(rgba.rows)};
-  output.format = image_core::PixelFormat::rgba8;
-  output.pixels.assign(rgba.data, rgba.data + rgba.total() * rgba.elemSize());
+  output.reset({static_cast<std::uint32_t>(rgba.cols), static_cast<std::uint32_t>(rgba.rows)}, image_core::PixelFormat::rgba8);
+  std::copy_n(rgba.data, output.pixels.size(), output.pixels.data());
   return image_core::Status::success();
 }
 

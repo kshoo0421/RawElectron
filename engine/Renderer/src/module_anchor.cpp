@@ -59,9 +59,7 @@ image_core::Status ProxyRenderer::render_preview(
     return {image_core::StatusCode::invalid_argument, "Renderer requires a non-empty RGBA8 bitmap"};
   }
 
-  output.size = preview_size(input, maximum_size);
-  output.format = image_core::PixelFormat::rgba8;
-  output.pixels.resize(static_cast<size_t>(output.size.width) * output.size.height * 4);
+  output.reset(preview_size(input, maximum_size), image_core::PixelFormat::rgba8, input.color_space);
 
   return resize_rgba(input, output.size, output.pixels.data(), output.pixels.size());
 }

@@ -7,7 +7,7 @@
 
 namespace rawelectron::image_core {
 
-enum class StatusCode { ok, invalid_argument, not_implemented, internal_error };
+enum class StatusCode { ok, invalid_argument, unsupported_format, memory_error, not_implemented, internal_error };
 
 struct Status {
   StatusCode code = StatusCode::ok;
@@ -31,10 +31,58 @@ struct Rect {
 
 enum class PixelFormat { unknown, rgba8, rgba16, rgba32_float };
 
-struct Bitmap {
+enum class ColorSpace { unknown, srgb, linear_srgb, display_p3, rec2020 };
+
+[[nodiscard]] constexpr std::size_t bytes_per_pixel(PixelFormat format) noexcept {
+  switch (format) {
+    case PixelFormat::rgba8: return 4;
+    case PixelFormat::rgba16: return 8;
+    case PixelFormat::rgba32_float: return 16;
+    default: return 0;
+  }
+}
+
+// Engine-owned, tightly packed working image. Codec-specific buffers must be
+// converted into this representation before leaving the Codec module.
+class Bitmap {
+ public:
   Size size;
   PixelFormat format = PixelFormat::unknown;
+  ColorSpace color_space = ColorSpace::unknown;
+  std::uint16_t bit_depth = 0;
   std::vector<std::uint8_t> pixels;
+
+  Bitmap() = default;
+  Bitmap(Size bitmap_size, PixelFormat pixel_format, ColorSpace space = ColorSpace::srgb) {
+    reset(bitmap_size, pixel_format, space);
+  }
+
+  void reset(Size bitmap_size, PixelFormat pixel_format, ColorSpace space = ColorSpace::srgb) {
+    size = bitmap_size;
+    format = pixel_format;
+    color_space = space;
+    bit_depth = pixel_format == PixelFormat::rgba8 ? 8 : pixel_format == PixelFormat::rgba16 ? 16 :
+        pixel_format == PixelFormat::rgba32_float ? 32 : 0;
+    pixels.assign(byte_size(), 0);
+  }
+
+  void clear() noexcept {
+    size = {};
+    format = PixelFormat::unknown;
+    color_space = ColorSpace::unknown;
+    bit_depth = 0;
+    pixels.clear();
+  }
+
+  [[nodiscard]] std::size_t stride() const noexcept {
+    return static_cast<std::size_t>(size.width) * bytes_per_pixel(format);
+  }
+  [[nodiscard]] std::size_t byte_size() const noexcept {
+    return stride() * static_cast<std::size_t>(size.height);
+  }
+  [[nodiscard]] bool valid() const noexcept {
+    return size.width != 0 && size.height != 0 && bytes_per_pixel(format) != 0 && pixels.size() == byte_size();
+  }
 };
 
 // Non-owning view used at the JS/C++ boundary. The JavaScript ArrayBuffer owns
@@ -45,6 +93,12 @@ struct BitmapView {
   std::uint32_t stride = 0;
   std::uint8_t* data = nullptr;
   std::size_t byte_length = 0;
+
+  [[nodiscard]] bool valid() const noexcept {
+    const auto minimum_stride = static_cast<std::size_t>(size.width) * bytes_per_pixel(format);
+    return data != nullptr && size.width != 0 && size.height != 0 && stride >= minimum_stride &&
+        byte_length >= static_cast<std::size_t>(stride) * size.height;
+  }
 };
 
 struct Adjustment {

@@ -437,3 +437,33 @@ Export
 | Version | Date | Description |
 |----------|------|-------------|
 | 0.1 | YYYY-MM-DD | Initial Draft |
+
+---
+
+# 17. C++ Working Bitmap Contract
+
+`ImageCore::Bitmap` is the common owning image type shared by Codec, Processing,
+Renderer, and Engine. Native codec objects such as `cv::Mat`, `avifRGBImage`,
+`libraw_processed_image_t`, and JPEG XR buffers never cross the Codec boundary.
+
+The bitmap contains:
+
+- pixel dimensions;
+- normalized pixel format;
+- color space and channel bit depth;
+- tightly packed, engine-owned pixel storage;
+- allocation, stride, byte-size, and validity operations.
+
+The current decoder output is tightly packed RGBA8 in sRGB. Higher precision
+formats remain part of the common type so RAW/HDR decoders can be upgraded
+without changing the Engine API.
+
+Decode ownership follows this flow:
+
+```
+File -> Codec adapter -> ImageCore::Bitmap -> Engine ImageDocument
+```
+
+`BitmapView` is non-owning and may only refer to caller/shared storage for the
+duration of a native call. The UI receives an `ImageId` and preview storage
+metadata; it does not own the original bitmap.

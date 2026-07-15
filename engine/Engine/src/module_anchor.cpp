@@ -14,7 +14,7 @@ image_core::Status EngineApi::open_image(const std::string& path, image_core::Im
     return {image_core::StatusCode::invalid_argument, "Image path is empty"};
   }
   image_core::Bitmap original;
-  codec::OpenCvDecoder decoder;
+  codec::ImageDecoder decoder;
   const auto decode_status = decoder.decode(path, original);
   if (!decode_status.ok()) return decode_status;
   renderer::ProxyRenderer renderer;
