@@ -47,6 +47,17 @@ async function main() {
   const outputPath = path.resolve(__dirname, '..', 'native', 'build', 'engine-worker-export.png');
   const opened = await call('openImage', { imagePath });
   const imageId = opened.id;
+  const baselineBuffer = new SharedArrayBuffer(320 * 240 * 4);
+  const baseline = await call('renderPreviewShared', {
+    request: {
+      requestId: 90,
+      imageId,
+      quality: 'proxy',
+      params: {},
+      preview: { maxWidth: 320, maxHeight: 240 },
+    },
+    buffer: baselineBuffer,
+  });
   const sharedBuffer = new SharedArrayBuffer(320 * 240 * 4);
   const preview = await call('renderPreviewShared', {
     request: {
@@ -59,8 +70,12 @@ async function main() {
     buffer: sharedBuffer,
   });
   const previewPixels = new Uint8ClampedArray(sharedBuffer, 0, preview.stride * preview.height);
+  const baselinePixels = new Uint8ClampedArray(baselineBuffer, 0, baseline.stride * baseline.height);
   if (preview.data !== undefined || previewPixels.length !== preview.stride * preview.height || !previewPixels.some(Boolean)) {
     throw new Error('Worker did not write a valid shared RGBA8 preview');
+  }
+  if (!previewPixels.some((value, index) => value !== baselinePixels[index])) {
+    throw new Error('Worker adjustment request did not change preview pixels');
   }
   const fullBuffer = new SharedArrayBuffer(opened.width * opened.height * 4);
   const full = await callOriginal('renderPreviewShared', {

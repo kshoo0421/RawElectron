@@ -92,13 +92,29 @@ image_core::Status EngineApi::render_preview(
     adjustment = found->second.adjustment;
   }
   image_core::Bitmap processed;
+  // Interactive previews prioritize latency: shrink the engine-owned proxy to
+  // the viewport before running adjustment stages. Original previews retain
+  // the full-resolution pipeline and are resized only after processing.
+  image_core::Bitmap pipeline_input;
+  if (source == PreviewSource::proxy) {
+    renderer::ProxyRenderer renderer;
+    const auto resize_status = renderer.render_preview(input, maximum_size, pipeline_input);
+    if (!resize_status.ok()) return resize_status;
+  } else {
+    pipeline_input = std::move(input);
+  }
+
   processing::CpuImagePipeline pipeline;
   interfaces::PipelineContext context;
   context.purpose = interfaces::PipelinePurpose::preview;
   context.adjustment = adjustment;
   context.output_size = maximum_size;
-  auto status = pipeline.execute(input, context, processed);
+  auto status = pipeline.execute(pipeline_input, context, processed);
   if (!status.ok()) return status;
+  if (source == PreviewSource::proxy) {
+    output = std::move(processed);
+    return image_core::Status::success();
+  }
   renderer::ProxyRenderer renderer;
   return renderer.render_preview(processed, maximum_size, output);
 }

@@ -27,6 +27,17 @@ double luminance(double red, double green, double blue) {
   return red * 0.2126 + green * 0.7152 + blue * 0.0722;
 }
 
+bool is_identity(const image_core::Adjustment& value) {
+  return value.exposure == 0.0 && value.contrast == 0.0 && value.highlights == 0.0 &&
+      value.shadows == 0.0 && value.whites == 0.0 && value.blacks == 0.0 &&
+      value.temperature == 0.0 && value.tint == 0.0 && value.vibrance == 0.0 &&
+      value.saturation == 0.0 && value.texture == 0.0 && value.clarity == 0.0 &&
+      value.dehaze == 0.0 && value.vignette == 0.0 && value.grain == 0.0 &&
+      value.sharpening == 0.0 && value.luminance_noise == 0.0 && value.color_noise == 0.0 &&
+      value.moire == 0.0 && value.defringe == 0.0 &&
+      !value.remove_chromatic_aberration && !value.lens_correction;
+}
+
 void apply_spatial_detail(
     const image_core::Adjustment& adjustment,
     image_core::Bitmap& bitmap) {
@@ -75,6 +86,11 @@ image_core::Status BasicProcessor::process(
     image_core::Bitmap& output) {
   if (!input.valid() || input.format != image_core::PixelFormat::rgba8) {
     return {image_core::StatusCode::invalid_argument, "Processor requires a valid RGBA8 input"};
+  }
+
+  if (is_identity(adjustment)) {
+    output = input;
+    return image_core::Status::success();
   }
 
   output = input;

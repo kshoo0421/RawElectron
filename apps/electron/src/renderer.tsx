@@ -633,6 +633,11 @@ function App() {
         setPreviewUrl(proxyUrl);
         setPreviewQuality('proxy');
 
+        // Commit and paint the low-latency proxy before starting the expensive
+        // full-resolution render on the original worker.
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        if (cancelled || proxy.requestId !== engineRequestId.current) return;
+
         const original = await renderShared('original');
         if (cancelled || original.requestId !== engineRequestId.current) return;
         const url = await sharedBitmapUrl(original);
