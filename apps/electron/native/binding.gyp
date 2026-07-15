@@ -7,6 +7,7 @@
         "../src/native-engine/addon.cpp",
         "../../../engine/Codec/codec.cpp",
         "../../../engine/Processing/processor.cpp",
+        "../../../engine/Processing/pipeline.cpp",
         "../../../engine/Renderer/renderer.cpp",
         "../../../engine/Engine/engine_api.cpp",
         "../../../engine/IPC/engine_bridge.cpp"

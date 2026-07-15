@@ -1,5 +1,6 @@
 #include <Interfaces/image_pipeline.hpp>
 #include <Interfaces/engine_services.hpp>
+#include <Processing/pipeline.hpp>
 
 #include <type_traits>
 
@@ -21,5 +22,14 @@ int main() {
   context.purpose = interfaces::PipelinePurpose::preview;
   context.output_size = preview.maximum_size;
 
-  return preview.image_id != 0 && context.output_size.has_value() ? 0 : 1;
+  image_core::Bitmap input({1, 1}, image_core::PixelFormat::rgba8);
+  input.pixels = {64, 64, 64, 255};
+  context.adjustment.exposure = 1.0;
+  context.adjustment.temperature = 50.0;
+
+  processing::CpuImagePipeline pipeline;
+  image_core::Bitmap output;
+  const auto status = pipeline.execute(input, context, output);
+  const bool pipeline_changed_pixels = status.ok() && output.valid() && output.pixels != input.pixels;
+  return preview.image_id != 0 && context.output_size.has_value() && pipeline_changed_pixels ? 0 : 1;
 }

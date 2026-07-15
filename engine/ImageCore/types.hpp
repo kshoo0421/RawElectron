@@ -104,7 +104,26 @@ struct BitmapView {
 struct Adjustment {
   double exposure = 0.0;
   double contrast = 0.0;
+  double highlights = 0.0;
+  double shadows = 0.0;
+  double whites = 0.0;
+  double blacks = 0.0;
+  double temperature = 0.0;
+  double tint = 0.0;
+  double vibrance = 0.0;
   double saturation = 0.0;
+  double texture = 0.0;
+  double clarity = 0.0;
+  double dehaze = 0.0;
+  double vignette = 0.0;
+  double grain = 0.0;
+  double sharpening = 0.0;
+  double luminance_noise = 0.0;
+  double color_noise = 0.0;
+  double moire = 0.0;
+  double defringe = 0.0;
+  bool remove_chromatic_aberration = false;
+  bool lens_correction = false;
 };
 
 using ImageId = std::uint64_t;

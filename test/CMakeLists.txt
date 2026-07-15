@@ -1,4 +1,4 @@
 add_executable(rawelectron_interface_contracts interface_contracts.cpp)
-target_link_libraries(rawelectron_interface_contracts PRIVATE rawelectron_interfaces)
+target_link_libraries(rawelectron_interface_contracts PRIVATE rawelectron_processing)
 
 add_test(NAME interface_contracts COMMAND rawelectron_interface_contracts)

@@ -1,6 +1,6 @@
 #include <Engine/engine_api.hpp>
 #include <Codec/codec.hpp>
-#include <Processing/processor.hpp>
+#include <Processing/pipeline.hpp>
 #include <Renderer/renderer.hpp>
 
 #include <cstring>
@@ -91,9 +91,13 @@ image_core::Status EngineApi::render_preview(
         : found->second.proxy;
     adjustment = found->second.adjustment;
   }
-  processing::BasicProcessor processor;
   image_core::Bitmap processed;
-  auto status = processor.process(input, adjustment, processed);
+  processing::CpuImagePipeline pipeline;
+  interfaces::PipelineContext context;
+  context.purpose = interfaces::PipelinePurpose::preview;
+  context.adjustment = adjustment;
+  context.output_size = maximum_size;
+  auto status = pipeline.execute(input, context, processed);
   if (!status.ok()) return status;
   renderer::ProxyRenderer renderer;
   return renderer.render_preview(processed, maximum_size, output);
@@ -142,9 +146,12 @@ image_core::Status EngineApi::export_image(image_core::ImageId image_id, const s
     original = found->second.original;
     adjustment = found->second.adjustment;
   }
-  processing::BasicProcessor processor;
   image_core::Bitmap processed;
-  const auto status = processor.process(original, adjustment, processed);
+  processing::CpuImagePipeline pipeline;
+  interfaces::PipelineContext context;
+  context.purpose = interfaces::PipelinePurpose::export_image;
+  context.adjustment = adjustment;
+  const auto status = pipeline.execute(original, context, processed);
   if (!status.ok()) return status;
   return codec::encode_file(processed, output_path);
 }

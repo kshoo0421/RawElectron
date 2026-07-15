@@ -527,26 +527,9 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const previewFilter = useMemo(() => {
-    const values = Object.fromEntries(
-      sections.flatMap((section) =>
-        section.controls.filter(isSlider).map((control) => [control.id, control.value]),
-      ),
-    );
-
-    const exposure = 1 + Number(values.exposure ?? 0) * 0.08;
-    const contrast = 1 + Number(values.contrast ?? 0) * 0.003;
-    const saturation =
-      1 + (Number(values.saturation ?? 0) + Number(values.vibrance ?? 0) * 0.6) * 0.004;
-    const warmth = Number(values.temperature ?? 0) * 0.4;
-
-    return {
-      filter: `brightness(${exposure}) contrast(${contrast}) saturate(${saturation})`,
-      boxShadow: warmth
-        ? `inset 0 0 0 999px rgba(${warmth > 0 ? 255 : 90}, ${warmth > 0 ? 190 : 120}, ${warmth > 0 ? 80 : 255}, ${Math.abs(warmth) / 1000})`
-        : undefined,
-    };
-  }, [sections]);
+  // The bitmap already contains the native pipeline result. Keeping this
+  // style empty avoids applying the same adjustment a second time in CSS.
+  const previewFilter: React.CSSProperties = {};
 
   const selectedImage = images.find((image) => image.id === selectedImageId) ?? null;
   const editParams = useMemo(

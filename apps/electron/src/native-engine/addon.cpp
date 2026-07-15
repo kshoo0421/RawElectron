@@ -13,16 +13,6 @@
 namespace {
 constexpr bool kOpenCvEnabled = true;
 
-struct EditParams {
-  double exposure = 0.0;
-  double contrast = 0.0;
-  double temperature = 0.0;
-  double tint = 0.0;
-  double vibrance = 0.0;
-  double saturation = 0.0;
-  double sharpening = 0.0;
-};
-
 struct SharedBitmapData {
   std::uint8_t* data = nullptr;
   size_t byte_length = 0;
@@ -84,6 +74,13 @@ double GetDoubleProperty(napi_env env, napi_value object, const char* name, doub
   return result;
 }
 
+bool GetBoolProperty(napi_env env, napi_value object, const char* name, bool fallback = false) {
+  if (!HasProperty(env, object, name)) return fallback;
+  bool result = fallback;
+  Check(env, napi_get_value_bool(env, GetProperty(env, object, name), &result), "Failed to read bool");
+  return result;
+}
+
 rawelectron::image_core::ImageId GetImageIdProperty(napi_env env, napi_value object) {
   int64_t value = 0;
   Check(env, napi_get_value_int64(env, GetProperty(env, object, "imageId"), &value), "Failed to read imageId");
@@ -135,8 +132,8 @@ SharedBitmapData GetSharedBitmapData(napi_env env, napi_value bitmap) {
   return result;
 }
 
-EditParams ReadEditParams(napi_env env, napi_value request) {
-  EditParams params;
+rawelectron::image_core::Adjustment ReadEditParams(napi_env env, napi_value request) {
+  rawelectron::image_core::Adjustment params;
 
   if (!HasProperty(env, request, "params")) {
     return params;
@@ -145,11 +142,26 @@ EditParams ReadEditParams(napi_env env, napi_value request) {
   napi_value value = GetProperty(env, request, "params");
   params.exposure = GetDoubleProperty(env, value, "exposure");
   params.contrast = GetDoubleProperty(env, value, "contrast");
+  params.highlights = GetDoubleProperty(env, value, "highlights");
+  params.shadows = GetDoubleProperty(env, value, "shadows");
+  params.whites = GetDoubleProperty(env, value, "whites");
+  params.blacks = GetDoubleProperty(env, value, "blacks");
   params.temperature = GetDoubleProperty(env, value, "temperature");
   params.tint = GetDoubleProperty(env, value, "tint");
   params.vibrance = GetDoubleProperty(env, value, "vibrance");
   params.saturation = GetDoubleProperty(env, value, "saturation");
+  params.texture = GetDoubleProperty(env, value, "texture");
+  params.clarity = GetDoubleProperty(env, value, "clarity");
+  params.dehaze = GetDoubleProperty(env, value, "dehaze");
+  params.vignette = GetDoubleProperty(env, value, "vignette");
+  params.grain = GetDoubleProperty(env, value, "grain");
   params.sharpening = GetDoubleProperty(env, value, "sharpening");
+  params.luminance_noise = GetDoubleProperty(env, value, "luminanceNoise");
+  params.color_noise = GetDoubleProperty(env, value, "colorNoise");
+  params.moire = GetDoubleProperty(env, value, "moire");
+  params.defringe = GetDoubleProperty(env, value, "defringe");
+  params.remove_chromatic_aberration = GetBoolProperty(env, value, "removeCa");
+  params.lens_correction = GetBoolProperty(env, value, "lensCorrection");
 
   return params;
 }
@@ -177,12 +189,8 @@ napi_value RenderPreview(napi_env env, napi_callback_info info) {
     const int32_t request_id = GetIntProperty(env, request, "requestId");
     const auto image_id = GetImageIdProperty(env, request);
     const auto preview_source = ReadPreviewSource(env, request);
-    const EditParams params = ReadEditParams(env, request);
-    rawelectron::image_core::Adjustment engine_adjustment;
-    engine_adjustment.exposure = params.exposure;
-    engine_adjustment.contrast = params.contrast;
-    engine_adjustment.saturation = params.saturation;
-    ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, engine_adjustment));
+    const auto adjustment = ReadEditParams(env, request);
+    ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, adjustment));
 
     int32_t max_width = 1600;
     int32_t max_height = 1200;
@@ -260,11 +268,7 @@ napi_value RenderPreviewInto(napi_env env, napi_callback_info info) {
     const int32_t request_id = GetIntProperty(env, request, "requestId");
     const auto image_id = GetImageIdProperty(env, request);
     const auto preview_source = ReadPreviewSource(env, request);
-    const EditParams params = ReadEditParams(env, request);
-    rawelectron::image_core::Adjustment adjustment;
-    adjustment.exposure = params.exposure;
-    adjustment.contrast = params.contrast;
-    adjustment.saturation = params.saturation;
+    const auto adjustment = ReadEditParams(env, request);
     ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, adjustment));
 
     int32_t max_width = 1600;
@@ -322,11 +326,7 @@ napi_value RenderPreviewFile(napi_env env, napi_callback_info info) {
     const int32_t request_id = GetIntProperty(env, request, "requestId");
     const auto image_id = GetImageIdProperty(env, request);
     const auto preview_source = ReadPreviewSource(env, request);
-    const EditParams params = ReadEditParams(env, request);
-    rawelectron::image_core::Adjustment adjustment;
-    adjustment.exposure = params.exposure;
-    adjustment.contrast = params.contrast;
-    adjustment.saturation = params.saturation;
+    const auto adjustment = ReadEditParams(env, request);
     ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, adjustment));
 
     napi_value path_value = args[1];
@@ -386,12 +386,8 @@ napi_value ExportRenderedImage(napi_env env, napi_callback_info info) {
     napi_value request = args[0];
     const auto image_id = GetImageIdProperty(env, request);
     const std::string output_path = GetStringProperty(env, request, "outputPath");
-    const EditParams params = ReadEditParams(env, request);
-    rawelectron::image_core::Adjustment engine_adjustment;
-    engine_adjustment.exposure = params.exposure;
-    engine_adjustment.contrast = params.contrast;
-    engine_adjustment.saturation = params.saturation;
-    ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, engine_adjustment));
+    const auto adjustment = ReadEditParams(env, request);
+    ThrowIfFailed(env, rawelectron::ipc::set_adjustment(image_id, adjustment));
     ThrowIfFailed(env, rawelectron::ipc::export_image(image_id, output_path));
 
     napi_value result;

@@ -9,7 +9,7 @@ endfunction()
 
 rawelectron_module(rawelectron_image_core ImageCore/image_core.cpp)
 rawelectron_module(rawelectron_codec Codec/codec.cpp)
-rawelectron_module(rawelectron_processing Processing/processor.cpp)
+rawelectron_module(rawelectron_processing "Processing/processor.cpp;Processing/pipeline.cpp")
 rawelectron_module(rawelectron_renderer Renderer/renderer.cpp)
 rawelectron_module(rawelectron_engine Engine/engine_api.cpp)
 rawelectron_module(rawelectron_ipc IPC/engine_bridge.cpp)
