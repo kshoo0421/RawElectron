@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  MessageChannelMain,
   net,
   protocol,
   session,
@@ -40,6 +41,7 @@ if (started) {
 const engineWorker = new EngineWorker();
 const previewRoot = path.join(app.getPath('temp'), 'RawElectron', 'preview');
 const debugLogs: DebugLogEntry[] = [];
+const initialPreviewLogged = new Set<number>();
 let nextDebugLogId = 1;
 
 function debugLog(level: DebugLogLevel, source: string, message: string) {
@@ -58,6 +60,16 @@ function debugLog(level: DebugLogLevel, source: string, message: string) {
 }
 
 ipcMain.handle('debug-logs:list', () => debugLogs);
+ipcMain.on('debug-logs:report-error', (_event, payload: { source?: unknown; message?: unknown }) => {
+  const source = typeof payload?.source === 'string' ? payload.source.slice(0, 40) : 'UI';
+  const message = typeof payload?.message === 'string' ? payload.message.slice(0, 1000) : '알 수 없는 UI 오류';
+  debugLog('error', source, message);
+});
+ipcMain.on('debug-logs:report-info', (_event, payload: { source?: unknown; message?: unknown }) => {
+  const source = typeof payload?.source === 'string' ? payload.source.slice(0, 40) : 'UI';
+  const message = typeof payload?.message === 'string' ? payload.message.slice(0, 1000) : 'UI 상태 알림';
+  debugLog('debug', source, message);
+});
 
 type ImageFile = {
   id: number;
@@ -150,15 +162,66 @@ ipcMain.handle('engine-preview-file:render', async (_event, request: EngineWorke
   const fileName = `${request.imageId}-${request.quality}-${request.requestId}.png`;
   const outputPath = path.join(previewRoot, fileName);
   const startedAt = performance.now();
-  debugLog('debug', '프리뷰', `#${request.requestId} ${request.quality} 렌더링 시작 (${width}×${height})`);
+  const shouldLog = request.quality !== 'proxy' || !initialPreviewLogged.has(request.imageId);
+  if (shouldLog) {
+    initialPreviewLogged.add(request.imageId);
+    debugLog('debug', '프리뷰', `이미지 #${request.imageId} 최초 프리뷰 렌더링 시작 (${width}×${height})`);
+  }
   try {
     const result = await engineWorker.renderPreviewFile(request, outputPath);
-    debugLog('info', '프리뷰', `#${request.requestId} ${request.quality} 렌더링 완료 (${Math.round(performance.now() - startedAt)}ms)`);
+    if (shouldLog) debugLog('info', '프리뷰', `이미지 #${request.imageId} 최초 프리뷰 표시 준비 완료 (${Math.round(performance.now() - startedAt)}ms)`);
     return { ...result, url: `rawelectron://preview/${fileName}` };
   } catch (error) {
-    debugLog('error', '프리뷰', `#${request.requestId} 렌더링 실패: ${error instanceof Error ? error.message : String(error)}`);
+    debugLog('error', '프리뷰', `이미지 #${request.imageId} 렌더링 실패: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
+});
+
+ipcMain.on('shared-preview:connect', (event) => {
+  debugLog('debug', '공유 메모리', 'UI의 공유 메모리 채널 연결 요청을 받았습니다.');
+  const { port1, port2 } = new MessageChannelMain();
+  port2.on('message', async ({ data }) => {
+    if (data === null) {
+      debugLog('error', '공유 메모리', '렌더러에서 보낸 메시지가 null로 변환되었습니다. SharedArrayBuffer를 프로세스 경계로 전달할 수 없습니다.');
+      return;
+    }
+    if (data?.type === 'shared-preview-displayed') {
+      if (data.quality === 'original') {
+        debugLog('info', '공유 메모리', `이미지 #${data.imageId} 원본 이미지를 UI에서 모두 읽어 교체했습니다.`);
+      } else if (!initialPreviewLogged.has(data.imageId)) {
+        initialPreviewLogged.add(data.imageId);
+        debugLog('info', '공유 메모리', `이미지 #${data.imageId} 축소 프리뷰를 UI에 최초 표시했습니다.`);
+      }
+      return;
+    }
+    if (data?.type !== 'render-shared-preview') return;
+    const request = data.request as EngineWorkerRenderRequest;
+    const width = request.preview?.maxWidth;
+    const height = request.preview?.maxHeight;
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+        || width <= 0 || height <= 0 || width * height > 4096 * 4096) {
+      port2.postMessage({ type: 'shared-preview-error', requestId: request.requestId, error: 'Invalid shared preview dimensions' });
+      return;
+    }
+    const sharedBuffer = new SharedArrayBuffer(width * height * 4);
+    const startedAt = performance.now();
+    try {
+      const result = await engineWorker.renderPreviewShared(request, sharedBuffer);
+      const pixels = Uint8ClampedArray.from(
+        new Uint8ClampedArray(sharedBuffer, 0, result.stride * result.height),
+      );
+      if (request.quality === 'original') {
+        debugLog('info', '공유 메모리', `이미지 #${request.imageId} 원본 이미지 적재 완료 (${result.width}×${result.height}, ${Math.round(performance.now() - startedAt)}ms)`);
+      }
+      port2.postMessage({ type: 'shared-preview-ready', ...result, data: pixels });
+    } catch (error) {
+      debugLog('error', '공유 메모리', `${request.quality} 이미지 적재 실패: ${error instanceof Error ? error.message : String(error)}`);
+      port2.postMessage({ type: 'shared-preview-error', requestId: request.requestId, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  port2.start();
+  event.senderFrame.postMessage('shared-preview-port', null, [port1]);
+  debugLog('debug', '공유 메모리', '공유 메모리 채널을 preload로 전달했습니다.');
 });
 
 const createWindow = () => {
@@ -194,7 +257,9 @@ const createWindow = () => {
     mainWindow.loadURL('rawelectron://bundle/index.html');
   }
 
-  mainWindow.webContents.once('did-finish-load', () => debugLog('info', '앱', 'GUI 로드를 완료했습니다.'));
+  mainWindow.webContents.once('did-finish-load', () => {
+    debugLog('info', '앱', 'GUI 로드를 완료했습니다.');
+  });
 
 };
 

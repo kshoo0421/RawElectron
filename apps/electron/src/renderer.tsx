@@ -83,6 +83,17 @@ type ImageFile = {
   pixelFormat: 'rgba8';
 };
 
+type SharedPreviewResult = {
+  type: 'shared-preview-ready';
+  requestId: number;
+  quality: 'proxy' | 'original';
+  width: number;
+  height: number;
+  stride: number;
+  engine: 'cpp' | 'cpp-opencv';
+  data: Uint8ClampedArray;
+};
+
 declare global {
   interface Window {
     rawElectron: {
@@ -100,6 +111,8 @@ declare global {
       }>;
       getDebugLogs: () => Promise<DebugLogEntry[]>;
       onDebugLog: (callback: (entry: DebugLogEntry) => void) => () => void;
+      requestSharedPreviewChannel: () => void;
+      reportDebugError: (source: string, message: string) => void;
       engineWorker: {
         exportRenderedImage: (request: unknown) => Promise<{ path: string }>;
       };
@@ -387,9 +400,17 @@ function App() {
   const [images, setImages] = useState<ImageFile[]>([]);
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewQuality, setPreviewQuality] = useState<'proxy' | 'original' | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [viewportPixels, setViewportPixels] = useState({ width: 1280, height: 960 });
   const engineRequestId = useRef(0);
+  const sharedPreviewPort = useRef<MessagePort | null>(null);
+  const sharedPreviewRequests = useRef(new Map<number, {
+    resolve: (value: SharedPreviewResult) => void;
+    reject: (reason: Error) => void;
+  }>());
+  const [sharedPreviewReady, setSharedPreviewReady] = useState(false);
+  const generatedPreviewUrl = useRef<string | null>(null);
   const [sections, setSections] = useState<ToolSection[]>(editSections);
   const [committedSections, setCommittedSections] = useState<ToolSection[]>(editSections);
   const [renderQuality, setRenderQuality] = useState<'proxy' | 'original'>('original');
@@ -420,6 +441,40 @@ function App() {
     generativeAi,
     selectedRatio,
   });
+
+  useEffect(() => {
+    let connected = false;
+    const receivePort = (event: MessageEvent) => {
+      if (event.data?.type !== 'shared-preview-port' || !event.ports[0]) return;
+      const port = event.ports[0];
+      connected = true;
+      port.onmessage = ({ data }) => {
+        const pending = sharedPreviewRequests.current.get(data?.requestId);
+        if (!pending) return;
+        sharedPreviewRequests.current.delete(data.requestId);
+        if (data.type === 'shared-preview-error') pending.reject(new Error(data.error));
+        else if (data.type === 'shared-preview-ready') pending.resolve(data as SharedPreviewResult);
+      };
+      port.start();
+      sharedPreviewPort.current = port;
+      setSharedPreviewReady(true);
+    };
+    window.addEventListener('message', receivePort);
+    window.rawElectron.requestSharedPreviewChannel();
+    const retryId = window.setInterval(() => {
+      if (!connected) window.rawElectron.requestSharedPreviewChannel();
+    }, 1000);
+    return () => {
+      window.clearInterval(retryId);
+      window.removeEventListener('message', receivePort);
+      sharedPreviewPort.current?.close();
+      sharedPreviewPort.current = null;
+    };
+  }, []);
+
+  useEffect(() => () => {
+    if (generatedPreviewUrl.current) URL.revokeObjectURL(generatedPreviewUrl.current);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -519,9 +574,11 @@ function App() {
   useEffect(() => {
     if (!selectedImage) {
       setPreviewUrl(null);
+      setPreviewQuality(null);
       setPreviewError(null);
       return undefined;
     }
+    if (!sharedPreviewReady) return undefined;
 
     setPreviewError(null);
     let cancelled = false;
@@ -530,46 +587,89 @@ function App() {
     const targetWidth = Math.max(1, Math.min(selectedImage.width, viewportPixels.width));
     const targetHeight = Math.max(1, Math.min(selectedImage.height, viewportPixels.height));
 
-    const renderBitmap = (quality: 'proxy' | 'original') => {
-      return window.rawElectron.renderPreviewFile({
-        requestId,
-        imageId: selectedImage.id,
-        quality,
-        params: renderParams,
-        preview: { maxWidth: targetWidth, maxHeight: targetHeight },
+    const renderShared = (quality: 'proxy' | 'original') => {
+      const port = sharedPreviewPort.current;
+      if (!port) return Promise.reject(new Error('Shared preview channel is not ready'));
+      return new Promise<SharedPreviewResult>((resolve, reject) => {
+        sharedPreviewRequests.current.set(requestId, {
+          resolve,
+          reject,
+        });
+        port.postMessage({
+          type: 'render-shared-preview',
+          request: {
+            requestId,
+            imageId: selectedImage.id,
+            quality,
+            params: renderParams,
+            preview: { maxWidth: targetWidth, maxHeight: targetHeight },
+          },
+        });
       });
+    };
+
+    const sharedBitmapUrl = async (result: SharedPreviewResult) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = result.width;
+      canvas.height = result.height;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Canvas 2D context is unavailable');
+      const packed = new Uint8ClampedArray(result.width * result.height * 4);
+      const source = result.data;
+      const rowBytes = result.width * 4;
+      for (let row = 0; row < result.height; row += 1) {
+        packed.set(source.subarray(row * result.stride, row * result.stride + rowBytes), row * rowBytes);
+      }
+      context.putImageData(new ImageData(packed, result.width, result.height), 0, 0);
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((value) => value ? resolve(value) : reject(new Error('Failed to encode shared preview')),
+          'image/png');
+      });
+      return URL.createObjectURL(blob);
     };
 
     const handleFailure = (quality: 'proxy' | 'original', error: unknown) => {
       if (!cancelled) {
-        setPreviewError(
-          `${quality} Preview 생성 실패: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        const message = `${quality} Preview 생성 실패: ${error instanceof Error ? error.message : String(error)}`;
+        setPreviewError(message);
+        window.rawElectron.reportDebugError('프리뷰', message);
       }
     };
 
-    if (renderQuality === 'proxy') {
-    void renderBitmap('proxy')
-      .then((proxy) => {
+    void (async () => {
+      try {
+        const proxy = await renderShared('proxy');
         if (cancelled || proxy.requestId !== engineRequestId.current) return;
-        setPreviewUrl(proxy.url);
-      })
-      .catch((error) => handleFailure('proxy', error));
-    }
+        const proxyUrl = await sharedBitmapUrl(proxy);
+        if (cancelled || proxy.requestId !== engineRequestId.current) {
+          URL.revokeObjectURL(proxyUrl);
+          return;
+        }
+        if (generatedPreviewUrl.current) URL.revokeObjectURL(generatedPreviewUrl.current);
+        generatedPreviewUrl.current = proxyUrl;
+        setPreviewUrl(proxyUrl);
+        setPreviewQuality('proxy');
 
-    if (renderQuality === 'original') {
-    void renderBitmap('original')
-      .then((original) => {
+        const original = await renderShared('original');
         if (cancelled || original.requestId !== engineRequestId.current) return;
-        setPreviewUrl(original.url);
-      })
-      .catch((error) => handleFailure('original', error));
-    }
+        const url = await sharedBitmapUrl(original);
+        if (cancelled || original.requestId !== engineRequestId.current) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        if (generatedPreviewUrl.current) URL.revokeObjectURL(generatedPreviewUrl.current);
+        generatedPreviewUrl.current = url;
+        setPreviewUrl(url);
+        setPreviewQuality('original');
+      } catch (error) {
+        handleFailure('original', error);
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [selectedImage, renderParams, viewportPixels, renderQuality]);
+  }, [selectedImage, renderParams, viewportPixels, renderQuality, sharedPreviewReady]);
 
   const openImages = async () => {
     setPreviewError(null);
@@ -633,6 +733,15 @@ function App() {
           selectedImage={selectedImage}
           previewUrl={previewUrl}
           previewError={previewError}
+          onPreviewLoaded={() => {
+            if (selectedImage && previewQuality) {
+              sharedPreviewPort.current?.postMessage({
+                type: 'shared-preview-displayed',
+                imageId: selectedImage.id,
+                quality: previewQuality,
+              });
+            }
+          }}
           onViewportPixelsChange={setViewportPixels}
           previewFilter={previewFilter}
           activeTool={activeTool}
@@ -921,6 +1030,7 @@ function Viewer({
   selectedImage,
   previewUrl,
   previewError,
+  onPreviewLoaded,
   onViewportPixelsChange,
   previewFilter,
   activeTool,
@@ -932,6 +1042,7 @@ function Viewer({
   selectedImage: ImageFile | null;
   previewUrl: string | null;
   previewError: string | null;
+  onPreviewLoaded: () => void;
   onViewportPixelsChange: (size: { width: number; height: number }) => void;
   previewFilter: React.CSSProperties;
   activeTool: ActiveTool;
@@ -962,7 +1073,12 @@ function Viewer({
           {selectedImage ? (
             <div className="sample-photo loaded-photo" style={previewFilter} role="img" aria-label={selectedImage.name}>
               {previewUrl ? (
-                <img src={previewUrl} className="photo-img" alt={selectedImage.name} />
+                <img
+                  src={previewUrl}
+                  className="photo-img"
+                  alt={selectedImage.name}
+                  onLoad={onPreviewLoaded}
+                />
               ) : (
                 <div className={`preview-loading ${previewError ? 'preview-error' : ''}`} role="status">
                   {previewError ?? '파일 로드 완료 · Proxy Preview 생성 중…'}
