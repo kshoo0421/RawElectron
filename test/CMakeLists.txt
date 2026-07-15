@@ -2,3 +2,13 @@ add_executable(rawelectron_interface_contracts interface_contracts.cpp)
 target_link_libraries(rawelectron_interface_contracts PRIVATE rawelectron_processing)
 
 add_test(NAME interface_contracts COMMAND rawelectron_interface_contracts)
+set_tests_properties(interface_contracts PROPERTIES
+  ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${RAWELECTRON_OPENCV_INSTALL_DIR}/x64/vc17/bin"
+)
+
+add_executable(rawelectron_processing_behavior processing_behavior.cpp)
+target_link_libraries(rawelectron_processing_behavior PRIVATE rawelectron_processing)
+add_test(NAME processing_behavior COMMAND rawelectron_processing_behavior)
+set_tests_properties(processing_behavior PROPERTIES
+  ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${RAWELECTRON_OPENCV_INSTALL_DIR}/x64/vc17/bin"
+)

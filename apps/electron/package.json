@@ -12,6 +12,7 @@
     "test:shared-bitmap": "node scripts/test-shared-bitmap.cjs",
     "test:engine-handle": "node scripts/test-engine-handle.cjs",
     "test:engine-worker": "node scripts/test-engine-worker.cjs",
+    "test:adjustments": "node scripts/test-adjustment-pipeline.cjs",
     "test:preview-file": "node scripts/test-preview-file.cjs",
     "test:preview-port": "electron scripts/test-preview-port-electron.cjs",
     "test:preview-preload": "electron scripts/test-preview-preload-electron.cjs",

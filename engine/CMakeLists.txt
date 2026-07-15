@@ -21,6 +21,8 @@ if(RAWELECTRON_ENABLE_AVIF)
   target_compile_definitions(rawelectron_codec PRIVATE RAWELECTRON_WITH_AVIF=1)
 endif()
 target_link_libraries(rawelectron_processing PUBLIC rawelectron_image_core)
+target_link_libraries(rawelectron_processing PRIVATE opencv_core opencv_imgproc)
+target_compile_definitions(rawelectron_processing PRIVATE CV_IGNORE_DEBUG_BUILD_GUARD)
 target_link_libraries(rawelectron_renderer PUBLIC rawelectron_image_core)
 target_link_libraries(rawelectron_renderer PRIVATE opencv_core opencv_imgproc)
 target_link_libraries(rawelectron_engine PUBLIC

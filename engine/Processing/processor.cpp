@@ -2,105 +2,166 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 namespace rawelectron::processing {
+namespace {
+
+double normalized(double value) {
+  return std::clamp(value, -100.0, 100.0) / 100.0;
+}
+
+double positive_normalized(double value) {
+  return std::clamp(value, 0.0, 100.0) / 100.0;
+}
+
+double smoothstep(double edge0, double edge1, double value) {
+  const double t = std::clamp((value - edge0) / (edge1 - edge0), 0.0, 1.0);
+  return t * t * (3.0 - 2.0 * t);
+}
+
+double luminance(double red, double green, double blue) {
+  return red * 0.2126 + green * 0.7152 + blue * 0.0722;
+}
+
+void apply_spatial_detail(
+    const image_core::Adjustment& adjustment,
+    image_core::Bitmap& bitmap) {
+  const double texture = normalized(adjustment.texture);
+  const double clarity = normalized(adjustment.clarity);
+  const double sharpening = std::clamp(adjustment.sharpening, 0.0, 150.0) / 100.0;
+  const double luminance_noise = positive_normalized(adjustment.luminance_noise);
+  const double color_noise = positive_normalized(adjustment.color_noise);
+  if (texture == 0.0 && clarity == 0.0 && sharpening == 0.0 &&
+      luminance_noise == 0.0 && color_noise == 0.0) {
+    return;
+  }
+
+  cv::Mat source(
+      static_cast<int>(bitmap.size.height),
+      static_cast<int>(bitmap.size.width),
+      CV_8UC4,
+      bitmap.pixels.data());
+  cv::Mat fine_blur;
+  cv::Mat local_blur;
+  cv::GaussianBlur(source, fine_blur, cv::Size(0, 0), 1.0);
+  cv::GaussianBlur(source, local_blur, cv::Size(0, 0), 4.0);
+
+  for (std::uint32_t y = 0; y < bitmap.size.height; ++y) {
+    auto* destination = source.ptr<cv::Vec4b>(static_cast<int>(y));
+    const auto* fine = fine_blur.ptr<cv::Vec4b>(static_cast<int>(y));
+    const auto* local = local_blur.ptr<cv::Vec4b>(static_cast<int>(y));
+    for (std::uint32_t x = 0; x < bitmap.size.width; ++x) {
+      for (int channel = 0; channel < 3; ++channel) {
+        double value = destination[x][channel];
+        value += (value - fine[x][channel]) * (texture * 0.8 + sharpening * 1.25);
+        value += (value - local[x][channel]) * clarity * 0.65;
+        const double smoothing = channel == 1 ? luminance_noise : std::max(luminance_noise, color_noise);
+        value += (fine[x][channel] - value) * smoothing * 0.65;
+        destination[x][channel] = cv::saturate_cast<std::uint8_t>(value);
+      }
+    }
+  }
+}
+
+}  // namespace
 
 image_core::Status BasicProcessor::process(
     const image_core::Bitmap& input,
     const image_core::Adjustment& adjustment,
     image_core::Bitmap& output) {
-  if (input.format != image_core::PixelFormat::rgba8) {
-    return {image_core::StatusCode::invalid_argument, "Processor requires RGBA8 input"};
+  if (!input.valid() || input.format != image_core::PixelFormat::rgba8) {
+    return {image_core::StatusCode::invalid_argument, "Processor requires a valid RGBA8 input"};
   }
+
   output = input;
   const double exposure = std::pow(2.0, std::clamp(adjustment.exposure, -5.0, 5.0));
-  const double contrast = 1.0 + std::clamp(adjustment.contrast, -100.0, 100.0) / 100.0;
-  const double saturation = 1.0 + std::clamp(adjustment.saturation, -100.0, 100.0) / 100.0;
-  const double vibrance = std::clamp(adjustment.vibrance, -100.0, 100.0) / 100.0;
-  const double temperature = std::clamp(adjustment.temperature, -100.0, 100.0) / 1000.0;
-  const double tint = std::clamp(adjustment.tint, -100.0, 100.0) / 1000.0;
-  const double highlights = std::clamp(adjustment.highlights, -100.0, 100.0) / 100.0;
-  const double shadows = std::clamp(adjustment.shadows, -100.0, 100.0) / 100.0;
-  const double whites = std::clamp(adjustment.whites, -100.0, 100.0) / 200.0;
-  const double blacks = std::clamp(adjustment.blacks, -100.0, 100.0) / 200.0;
-  const double dehaze = std::clamp(adjustment.dehaze, -100.0, 100.0) / 200.0;
-  const double vignette = std::clamp(adjustment.vignette, -100.0, 100.0) / 100.0;
-  const double detail = (std::clamp(adjustment.texture, -100.0, 100.0) * 0.003 +
-                         std::clamp(adjustment.clarity, -100.0, 100.0) * 0.004 +
-                         std::clamp(adjustment.sharpening, 0.0, 100.0) * 0.005);
-  const double smoothing = (std::clamp(adjustment.luminance_noise, 0.0, 100.0) +
-                            std::clamp(adjustment.color_noise, 0.0, 100.0)) * 0.003;
-  const double grain = std::clamp(adjustment.grain, 0.0, 100.0) / 2500.0;
-  const double artifact_desaturation =
-      (std::clamp(adjustment.moire, 0.0, 100.0) + std::clamp(adjustment.defringe, 0.0, 100.0)) / 400.0;
-
+  const double contrast = normalized(adjustment.contrast);
+  const double highlights = normalized(adjustment.highlights);
+  const double shadows = normalized(adjustment.shadows);
+  const double whites = normalized(adjustment.whites);
+  const double blacks = normalized(adjustment.blacks);
+  const double temperature = normalized(adjustment.temperature);
+  const double tint = normalized(adjustment.tint);
+  const double saturation = normalized(adjustment.saturation);
+  const double vibrance = normalized(adjustment.vibrance);
+  const double dehaze = normalized(adjustment.dehaze);
+  const double vignette = normalized(adjustment.vignette);
+  const double grain = positive_normalized(adjustment.grain);
+  const double artifact_reduction =
+      (positive_normalized(adjustment.moire) + positive_normalized(adjustment.defringe)) * 0.2;
   const double center_x = (output.size.width - 1) * 0.5;
   const double center_y = (output.size.height - 1) * 0.5;
-  const double maximum_radius = std::sqrt(center_x * center_x + center_y * center_y);
+  const double maximum_radius = std::max(1.0, std::sqrt(center_x * center_x + center_y * center_y));
 
-  for (size_t offset = 0; offset + 3 < output.pixels.size(); offset += 4) {
-    double red = output.pixels[offset] / 255.0;
-    double green = output.pixels[offset + 1] / 255.0;
-    double blue = output.pixels[offset + 2] / 255.0;
-    red = ((red - 0.5) * contrast + 0.5) * exposure;
-    green = ((green - 0.5) * contrast + 0.5) * exposure;
-    blue = ((blue - 0.5) * contrast + 0.5) * exposure;
-    const double luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722;
-    const double tone = highlights * luminance * luminance + shadows * (1.0 - luminance) * (1.0 - luminance);
-    red += tone + whites * luminance + blacks * (1.0 - luminance);
-    green += tone + whites * luminance + blacks * (1.0 - luminance);
-    blue += tone + whites * luminance + blacks * (1.0 - luminance);
-    red += temperature + tint * 0.5;
-    green -= tint;
-    blue -= temperature - tint * 0.5;
-    const double channel_peak = std::max({red, green, blue});
-    const double adaptive_saturation = saturation + vibrance * (1.0 - std::clamp(channel_peak - luminance, 0.0, 1.0)) - artifact_desaturation;
-    red = luminance + (red - luminance) * adaptive_saturation;
-    green = luminance + (green - luminance) * adaptive_saturation;
-    blue = luminance + (blue - luminance) * adaptive_saturation;
-    red = (red - 0.5) * (1.0 + dehaze) + 0.5;
-    green = (green - 0.5) * (1.0 + dehaze) + 0.5;
-    blue = (blue - 0.5) * (1.0 + dehaze) + 0.5;
+  for (std::size_t offset = 0; offset + 3 < output.pixels.size(); offset += 4) {
+    double red = input.pixels[offset] / 255.0;
+    double green = input.pixels[offset + 1] / 255.0;
+    double blue = input.pixels[offset + 2] / 255.0;
 
-    const size_t pixel = offset / 4;
-    const size_t x_index = pixel % output.size.width;
-    const size_t y_index = pixel / output.size.width;
-    if ((detail != 0.0 || smoothing != 0.0) && output.size.width > 2 && output.size.height > 2) {
-      const size_t left = (x_index == 0 ? pixel : pixel - 1) * 4;
-      const size_t right = (x_index + 1 >= output.size.width ? pixel : pixel + 1) * 4;
-      const size_t up = (y_index == 0 ? pixel : pixel - output.size.width) * 4;
-      const size_t down = (y_index + 1 >= output.size.height ? pixel : pixel + output.size.width) * 4;
-      for (size_t channel = 0; channel < 3; ++channel) {
-        const double source = input.pixels[offset + channel] / 255.0;
-        const double neighbours = (input.pixels[left + channel] + input.pixels[right + channel] +
-                                   input.pixels[up + channel] + input.pixels[down + channel]) / 1020.0;
-        double* value = channel == 0 ? &red : channel == 1 ? &green : &blue;
-        *value += (source - neighbours) * detail;
-        *value += (neighbours - *value) * std::clamp(smoothing, 0.0, 0.6);
-      }
-    }
+    red *= exposure;
+    green *= exposure;
+    blue *= exposure;
+    red = (red - 0.5) * (1.0 + contrast) + 0.5;
+    green = (green - 0.5) * (1.0 + contrast) + 0.5;
+    blue = (blue - 0.5) * (1.0 + contrast) + 0.5;
 
-    if (grain != 0.0) {
-      const std::uint32_t hash = static_cast<std::uint32_t>((pixel * 1664525u + 1013904223u) & 0xffffffffu);
-      const double noise = (static_cast<double>(hash & 0xffffu) / 65535.0 - 0.5) * grain;
+    const double lightness = std::clamp(luminance(red, green, blue), 0.0, 1.0);
+    const double highlight_mask = smoothstep(0.45, 1.0, lightness);
+    const double shadow_mask = 1.0 - smoothstep(0.0, 0.55, lightness);
+    const double white_mask = smoothstep(0.72, 1.0, lightness);
+    const double black_mask = 1.0 - smoothstep(0.0, 0.28, lightness);
+    const double tone_delta = highlights * highlight_mask * 0.34 +
+        shadows * shadow_mask * 0.34 + whites * white_mask * 0.24 + blacks * black_mask * 0.24;
+    red += tone_delta;
+    green += tone_delta;
+    blue += tone_delta;
+
+    // Approximate photographic temperature/tint adaptation in linear RGB.
+    red += temperature * 0.18 + tint * 0.055;
+    green -= tint * 0.12;
+    blue -= temperature * 0.18 - tint * 0.055;
+
+    const double adjusted_luminance = luminance(red, green, blue);
+    const double chroma = std::max({red, green, blue}) - std::min({red, green, blue});
+    const double vibrance_gain = vibrance * (1.0 - std::clamp(chroma, 0.0, 1.0));
+    const double color_gain = std::max(0.0, 1.0 + saturation + vibrance_gain - artifact_reduction);
+    red = adjusted_luminance + (red - adjusted_luminance) * color_gain;
+    green = adjusted_luminance + (green - adjusted_luminance) * color_gain;
+    blue = adjusted_luminance + (blue - adjusted_luminance) * color_gain;
+
+    // Dehaze expands local black/white separation; unlike ordinary contrast it
+    // also lowers the veiling-light floor for positive values.
+    red = (red - 0.45) * (1.0 + dehaze * 0.9) + 0.45 - dehaze * 0.035;
+    green = (green - 0.45) * (1.0 + dehaze * 0.9) + 0.45 - dehaze * 0.035;
+    blue = (blue - 0.45) * (1.0 + dehaze * 0.9) + 0.45 - dehaze * 0.035;
+
+    const std::size_t pixel = offset / 4;
+    const double x = static_cast<double>(pixel % output.size.width) - center_x;
+    const double y = static_cast<double>(pixel / output.size.width) - center_y;
+    const double radius = std::sqrt(x * x + y * y) / maximum_radius;
+    const double vignette_factor = 1.0 - vignette * smoothstep(0.25, 1.0, radius) * 0.72;
+    red *= vignette_factor;
+    green *= vignette_factor;
+    blue *= vignette_factor;
+
+    if (grain > 0.0) {
+      const std::uint32_t hash = static_cast<std::uint32_t>(pixel * 1664525u + 1013904223u);
+      const double noise = (static_cast<double>(hash & 0xffffu) / 65535.0 - 0.5) * grain * 0.09;
       red += noise;
       green += noise;
       blue += noise;
     }
 
-    if (vignette != 0.0 && maximum_radius > 0.0) {
-      const double x = static_cast<double>(pixel % output.size.width) - center_x;
-      const double y = static_cast<double>(pixel / output.size.width) - center_y;
-      const double radius = std::sqrt(x * x + y * y) / maximum_radius;
-      const double factor = 1.0 - vignette * radius * radius * 0.75;
-      red *= factor;
-      green *= factor;
-      blue *= factor;
-    }
-    output.pixels[offset] = static_cast<std::uint8_t>(std::clamp(red, 0.0, 1.0) * 255.0);
-    output.pixels[offset + 1] = static_cast<std::uint8_t>(std::clamp(green, 0.0, 1.0) * 255.0);
-    output.pixels[offset + 2] = static_cast<std::uint8_t>(std::clamp(blue, 0.0, 1.0) * 255.0);
+    output.pixels[offset] = static_cast<std::uint8_t>(std::clamp(red, 0.0, 1.0) * 255.0 + 0.5);
+    output.pixels[offset + 1] = static_cast<std::uint8_t>(std::clamp(green, 0.0, 1.0) * 255.0 + 0.5);
+    output.pixels[offset + 2] = static_cast<std::uint8_t>(std::clamp(blue, 0.0, 1.0) * 255.0 + 0.5);
   }
+
+  apply_spatial_detail(adjustment, output);
   return image_core::Status::success();
 }
 
