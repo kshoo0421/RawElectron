@@ -9,6 +9,10 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#ifdef RAWELECTRON_WITH_LIBRAW
+#include <libraw/libraw.h>
+#endif
+
 namespace rawelectron::codec {
 
 namespace {
@@ -48,6 +52,54 @@ image_core::Status OpenCvDecoder::decode(const std::string& path, image_core::Bi
   std::vector<std::uint8_t> file_bytes;
   const auto read_status = read_file(path, file_bytes);
   if (!read_status.ok()) return read_status;
+
+#ifdef RAWELECTRON_WITH_LIBRAW
+  const auto extension = utf8_path(path).extension().u8string();
+  std::string lowered_extension(extension.begin(), extension.end());
+  std::transform(lowered_extension.begin(), lowered_extension.end(), lowered_extension.begin(), [](unsigned char value) {
+    return static_cast<char>(std::tolower(value));
+  });
+  const bool is_raw = lowered_extension == ".arw" || lowered_extension == ".cr2" ||
+      lowered_extension == ".cr3" || lowered_extension == ".nef" || lowered_extension == ".nrw" ||
+      lowered_extension == ".dng" || lowered_extension == ".raf" || lowered_extension == ".orf" ||
+      lowered_extension == ".rw2" || lowered_extension == ".pef";
+  if (is_raw) {
+    LibRaw raw;
+    raw.imgdata.params.output_bps = 8;
+    raw.imgdata.params.output_color = 1;
+    raw.imgdata.params.use_camera_wb = 1;
+    raw.imgdata.params.use_auto_wb = 0;
+    raw.imgdata.params.no_auto_bright = 0;
+    int result = raw.open_buffer(file_bytes.data(), file_bytes.size());
+    if (result != LIBRAW_SUCCESS) {
+      return {image_core::StatusCode::invalid_argument, std::string("LibRaw open failed: ") + libraw_strerror(result)};
+    }
+    result = raw.unpack();
+    if (result == LIBRAW_SUCCESS) result = raw.dcraw_process();
+    if (result != LIBRAW_SUCCESS) {
+      return {image_core::StatusCode::invalid_argument, std::string("LibRaw decode failed: ") + libraw_strerror(result)};
+    }
+    int memory_error = LIBRAW_SUCCESS;
+    libraw_processed_image_t* image = raw.dcraw_make_mem_image(&memory_error);
+    if (!image || memory_error != LIBRAW_SUCCESS || image->type != LIBRAW_IMAGE_BITMAP ||
+        image->bits != 8 || (image->colors != 3 && image->colors != 4)) {
+      if (image) LibRaw::dcraw_clear_mem(image);
+      return {image_core::StatusCode::invalid_argument, "LibRaw did not produce an 8-bit bitmap"};
+    }
+    output.size = {image->width, image->height};
+    output.format = image_core::PixelFormat::rgba8;
+    output.pixels.resize(static_cast<size_t>(image->width) * image->height * 4);
+    for (size_t pixel = 0, count = static_cast<size_t>(image->width) * image->height; pixel < count; ++pixel) {
+      output.pixels[pixel * 4] = image->data[pixel * image->colors];
+      output.pixels[pixel * 4 + 1] = image->data[pixel * image->colors + 1];
+      output.pixels[pixel * 4 + 2] = image->data[pixel * image->colors + 2];
+      output.pixels[pixel * 4 + 3] = image->colors == 4 ? image->data[pixel * 4 + 3] : 255;
+    }
+    LibRaw::dcraw_clear_mem(image);
+    return image_core::Status::success();
+  }
+#endif
+
   cv::Mat decoded = cv::imdecode(file_bytes, cv::IMREAD_UNCHANGED);
   if (decoded.empty()) {
     return {image_core::StatusCode::invalid_argument, "Failed to decode image"};

@@ -128,6 +128,14 @@ function findUnixLibs(root) {
 }
 
 function writeGypi(config) {
+  const librawRoot = path.join(thirdPartyDir, 'libraw');
+  const librawLibrary = path.join(librawRoot, 'buildfiles', 'release-x86_64', 'libraw.lib');
+  if (exists(librawLibrary)) {
+    const defaults = config.target_defaults ?? (config.target_defaults = {});
+    defaults.defines = unique([...(defaults.defines ?? []), 'RAWELECTRON_WITH_LIBRAW']);
+    defaults.include_dirs = unique([...(defaults.include_dirs ?? []), librawRoot]);
+    defaults.libraries = unique([...(defaults.libraries ?? []), librawLibrary]);
+  }
   fs.writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 

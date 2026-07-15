@@ -41,7 +41,9 @@ function callOriginal(type, payload) {
 }
 
 async function main() {
-  const imagePath = path.resolve(__dirname, '..', '..', '..', 'third_party', 'opencv', 'samples', 'data', 'lena.jpg');
+  const imagePath = process.argv[2]
+    ? path.resolve(process.argv[2])
+    : path.resolve(__dirname, '..', '..', '..', 'third_party', 'opencv', 'samples', 'data', 'lena.jpg');
   const outputPath = path.resolve(__dirname, '..', 'native', 'build', 'engine-worker-export.png');
   const opened = await call('openImage', { imagePath });
   const imageId = opened.id;

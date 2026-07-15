@@ -17,3 +17,4 @@ third_party/nasm/*.lib
 third_party/nasm/*.pdb
 third_party/nasm/*.ilk
 third_party/nasm/msvc.dep
+third_party/libraw/buildfiles/*-x86_64/

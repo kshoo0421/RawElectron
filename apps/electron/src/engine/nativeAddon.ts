@@ -56,9 +56,12 @@ const packagedResourcesPath = typeof process.resourcesPath === 'string'
 
 const nativeRuntimeDllPaths = [
   ...(packagedResourcesPath ? [packagedResourcesPath] : []),
+  path.join(process.cwd(), '..', '..', 'third_party', 'libraw', 'buildfiles', 'release-x86_64'),
+  path.join(process.cwd(), 'third_party', 'libraw', 'buildfiles', 'release-x86_64'),
   path.join(process.cwd(), '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin'),
   path.join(process.cwd(), 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin'),
   path.join(__dirname, '..', '..', '..', '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin'),
+  path.join(__dirname, '..', '..', '..', '..', '..', 'third_party', 'libraw', 'buildfiles', 'release-x86_64'),
 ];
 
 const nativeAddonPaths = [

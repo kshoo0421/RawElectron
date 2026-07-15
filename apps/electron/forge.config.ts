@@ -32,6 +32,7 @@ const opencvInstallRoot = path.resolve(__dirname, '..', '..', 'third_party', 'op
 
 const nativeResourceCandidates = [
   path.resolve(__dirname, 'native', 'build', 'Release', 'rawelectron_engine.node'),
+  path.resolve(__dirname, '..', '..', 'third_party', 'libraw', 'buildfiles', 'release-x86_64', 'libraw.dll'),
   ...findNativeRuntimeLibraries(opencvInstallRoot),
 ].filter((resourcePath) => fs.existsSync(resourcePath));
 

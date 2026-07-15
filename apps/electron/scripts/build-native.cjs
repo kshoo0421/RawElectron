@@ -43,6 +43,28 @@ function readConfiguredMsBuildPath() {
   return match[1].replace(/\\\\/g, '\\');
 }
 
+function buildLibRaw() {
+  if (process.platform !== 'win32') return;
+  const project = path.resolve(projectRoot, '..', '..', 'third_party', 'libraw', 'buildfiles', 'libraw.vcxproj');
+  if (!fs.existsSync(project)) return;
+  const env = {};
+  let combinedPath = '';
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.toLowerCase() === 'path') combinedPath = [combinedPath, value].filter(Boolean).join(';');
+    else env[key] = value;
+  }
+  env.Path = combinedPath;
+  run(readConfiguredMsBuildPath(), [
+    project,
+    '/t:Build',
+    '/nologo',
+    '/p:Configuration=Release',
+    '/p:Platform=x64',
+    '/p:PlatformToolset=v143',
+    '/p:WindowsTargetPlatformVersion=10.0',
+  ], { shell: false, env });
+}
+
 function findFiles(root, predicate, limit = 2000) {
   const results = [];
   const queue = [root];
@@ -95,6 +117,10 @@ function copyOpenCvRuntimeLibraries() {
   for (const library of runtimeLibraries) {
     fs.copyFileSync(library, path.join(outputDir, path.basename(library)));
   }
+  const librawDll = path.resolve(projectRoot, '..', '..', 'third_party', 'libraw', 'buildfiles', 'release-x86_64', 'libraw.dll');
+  if (process.platform === 'win32' && fs.existsSync(librawDll)) {
+    fs.copyFileSync(librawDll, path.join(outputDir, 'libraw.dll'));
+  }
 }
 
 if (process.platform !== 'win32') {
@@ -107,6 +133,9 @@ if (process.platform !== 'win32') {
 // On this Windows setup node-gyp selects ClangCL from the Node header config,
 // while only the normal MSVC v143 toolset is installed. Keep node-gyp's normal
 // project generation, then ask MSBuild to use the installed MSVC toolset.
+run(process.execPath, [writeOpenCvGypi]);
+nodeGyp(['configure']);
+buildLibRaw();
 run(process.execPath, [writeOpenCvGypi]);
 nodeGyp(['configure']);
 run(
