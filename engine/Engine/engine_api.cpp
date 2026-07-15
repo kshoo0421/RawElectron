@@ -1,7 +1,7 @@
-#include <rawelectron/engine/engine_api.hpp>
-#include <rawelectron/codec/codec.hpp>
-#include <rawelectron/processing/processor.hpp>
-#include <rawelectron/renderer/renderer.hpp>
+#include <Engine/engine_api.hpp>
+#include <Codec/codec.hpp>
+#include <Processing/processor.hpp>
+#include <Renderer/renderer.hpp>
 
 #include <cstring>
 

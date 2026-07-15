@@ -4,7 +4,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#include <rawelectron/image_core/types.hpp>
+#include <ImageCore/types.hpp>
 
 namespace rawelectron::engine {
 

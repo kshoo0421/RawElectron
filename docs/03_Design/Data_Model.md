@@ -442,7 +442,7 @@ Export
 
 # 17. C++ Working Bitmap Contract
 
-`ImageCore::Bitmap` is the common owning image type shared by Codec, Processing,
+`ImageCore::Bitmap` (`engine/ImageCore/types.hpp`) is the common owning image type shared by Codec, Processing,
 Renderer, and Engine. Native codec objects such as `cv::Mat`, `avifRGBImage`,
 `libraw_processed_image_t`, and JPEG XR buffers never cross the Codec boundary.
 

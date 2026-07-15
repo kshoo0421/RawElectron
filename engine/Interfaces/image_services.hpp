@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include <rawelectron/image_core/types.hpp>
+#include <ImageCore/types.hpp>
 
 namespace rawelectron::interfaces {
 

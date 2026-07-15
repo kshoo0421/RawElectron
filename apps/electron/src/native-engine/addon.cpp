@@ -7,8 +7,8 @@
 #include <string>
 #include <vector>
 
-#include <rawelectron/ipc/engine_bridge.hpp>
-#include <rawelectron/codec/codec.hpp>
+#include <IPC/engine_bridge.hpp>
+#include <Codec/codec.hpp>
 
 namespace {
 constexpr bool kOpenCvEnabled = true;

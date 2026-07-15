@@ -1,4 +1,4 @@
-#include <rawelectron/processing/processor.hpp>
+#include <Processing/processor.hpp>
 
 #include <algorithm>
 #include <cmath>

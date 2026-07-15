@@ -1,6 +1,6 @@
 #pragma once
 
-#include <rawelectron/interfaces/image_services.hpp>
+#include <Interfaces/image_services.hpp>
 
 namespace rawelectron::renderer {
 

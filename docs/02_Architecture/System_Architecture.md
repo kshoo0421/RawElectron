@@ -440,8 +440,8 @@ Engine은 UI Framework에 의존하지 않는다.
 ```text
 apps/electron/       Electron main, preload, React renderer
 engine/Interfaces/   엔진 공통 추상화
-engine/ImageCore/    공통 이미지 데이터
-engine/Codec/        이미지 입출력과 포맷별 어댑터
+engine/ImageCore/    공통 이미지 데이터 (헤더와 소스는 모듈 루트에 배치)
+engine/Codec/        이미지 입출력과 포맷별 어댑터 (헤더와 소스는 모듈 루트에 배치)
 engine/Processing/   순수 이미지 처리 연산
 engine/Renderer/     Proxy, Tile Cache, Viewport 렌더링
 engine/Engine/       Session, History, Job Queue, Cache 조정
