@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.join(ROOT, "apps", "electron")
@@ -63,6 +64,26 @@ def engine_build_environment():
 
     raise RuntimeError("Visual Studio C++ build environment was not found")
 
+def add_python_user_scripts_to_path(environment):
+    environment = (environment or os.environ).copy()
+    try:
+        user_base = subprocess.check_output(
+            [sys.executable, "-m", "site", "--user-base"],
+            text=True,
+        ).strip()
+    except subprocess.SubprocessError:
+        return environment
+
+    scripts_dir = os.path.join(user_base, "bin")
+    if not os.path.isdir(scripts_dir):
+        return environment
+
+    path_value = next((value for key, value in environment.items() if key.lower() == "path"), "")
+    for key in [key for key in environment if key.lower() == "path"]:
+        del environment[key]
+    environment["PATH"] = scripts_dir + os.pathsep + path_value
+    return environment
+
 def ensure_vendored_nasm(environment):
     machine = platform.machine().lower()
     if not IS_WINDOWS and machine not in ("x86_64", "amd64"):
@@ -115,7 +136,11 @@ def opencv_install_dir():
 
 def opencv_is_installed(install_dir):
     configs = glob.glob(os.path.join(install_dir, "**", "OpenCVConfig.cmake"), recursive=True)
-    headers = os.path.exists(os.path.join(install_dir, "include", "opencv2", "opencv.hpp"))
+    header_candidates = (
+        os.path.join(install_dir, "include", "opencv2", "opencv.hpp"),
+        os.path.join(install_dir, "include", "opencv4", "opencv2", "opencv.hpp"),
+    )
+    headers = any(os.path.exists(candidate) for candidate in header_candidates)
     return bool(configs and headers)
 
 def ensure_vendored_opencv(environment, config):
@@ -153,6 +178,7 @@ def main():
     args = parser.parse_args()
 
     build_env = engine_build_environment()
+    build_env = add_python_user_scripts_to_path(build_env)
     build_env = ensure_vendored_nasm(build_env)
     opencv_dir = ensure_vendored_opencv(build_env, args.config)
     build_env = (build_env or os.environ).copy()

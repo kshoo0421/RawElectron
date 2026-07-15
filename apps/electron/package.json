@@ -15,8 +15,8 @@
     "test:preview-file": "node scripts/test-preview-file.cjs",
     "test:preview-port": "electron scripts/test-preview-port-electron.cjs",
     "test:preview-preload": "electron scripts/test-preview-preload-electron.cjs",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
+    "package": "node scripts/run-forge.cjs package",
+    "make": "node scripts/run-forge.cjs make",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx ."
   },

@@ -72,29 +72,35 @@ function findFiles(root, predicate, limit = 2000) {
   return results;
 }
 
-function copyOpenCvRuntimeDlls() {
-  if (process.platform !== 'win32') {
+function copyOpenCvRuntimeLibraries() {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
     return;
   }
 
   const opencvRoot = path.resolve(projectRoot, '..', '..', 'third_party', 'opencv');
-  const dlls = findFiles(opencvRoot, (name) => /^opencv_.*\.dll$/i.test(name));
+  const runtimeLibraries = findFiles(opencvRoot, (name) => {
+    if (process.platform === 'win32') {
+      return /^opencv_.*\.dll$/i.test(name);
+    }
+    return /^libopencv_.*\.dylib$/i.test(name);
+  });
 
-  if (!dlls.length) {
+  if (!runtimeLibraries.length) {
     return;
   }
 
   const outputDir = path.join(nativeDir, 'build', 'Release');
   fs.mkdirSync(outputDir, { recursive: true });
 
-  for (const dll of dlls) {
-    fs.copyFileSync(dll, path.join(outputDir, path.basename(dll)));
+  for (const library of runtimeLibraries) {
+    fs.copyFileSync(library, path.join(outputDir, path.basename(library)));
   }
 }
 
 if (process.platform !== 'win32') {
   run(process.execPath, [writeOpenCvGypi]);
   nodeGyp(['rebuild']);
+  copyOpenCvRuntimeLibraries();
   process.exit(0);
 }
 
@@ -115,4 +121,4 @@ run(
   ],
   { shell: false },
 );
-copyOpenCvRuntimeDlls();
+copyOpenCvRuntimeLibraries();
