@@ -1,1 +1,4 @@
-# Test targets are added per module under unit/ and integration/ as implementations land.
+add_executable(rawelectron_interface_contracts interface_contracts.cpp)
+target_link_libraries(rawelectron_interface_contracts PRIVATE rawelectron_interfaces)
+
+add_test(NAME interface_contracts COMMAND rawelectron_interface_contracts)
