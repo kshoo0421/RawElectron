@@ -18,3 +18,6 @@ third_party/nasm/*.pdb
 third_party/nasm/*.ilk
 third_party/nasm/msvc.dep
 third_party/libraw/buildfiles/*-x86_64/
+third_party/libavif/build-windows-x64/
+third_party/jxrlib/image/vc12projects/Release/
+third_party/jxrlib/jxrgluelib/Release/

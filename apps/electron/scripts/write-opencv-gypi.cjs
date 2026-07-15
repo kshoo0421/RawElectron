@@ -136,6 +136,36 @@ function writeGypi(config) {
     defaults.include_dirs = unique([...(defaults.include_dirs ?? []), librawRoot]);
     defaults.libraries = unique([...(defaults.libraries ?? []), librawLibrary]);
   }
+  const jxrRoot = path.join(thirdPartyDir, 'jxrlib');
+  const jxrLibraries = [
+    path.join(jxrRoot, 'image', 'vc12projects', 'Release', 'JXRCommonLib', 'x64', 'JXRCommonLib.lib'),
+    path.join(jxrRoot, 'image', 'vc12projects', 'Release', 'JXRDecodeLib', 'x64', 'JXRDecodeLib.lib'),
+    path.join(jxrRoot, 'image', 'vc12projects', 'Release', 'JXREncodeLib', 'x64', 'JXREncodeLib.lib'),
+    path.join(jxrRoot, 'jxrgluelib', 'Release', 'JXRGlueLib', 'x64', 'JXRGlueLib.lib'),
+  ];
+  if (jxrLibraries.every(exists)) {
+    const defaults = config.target_defaults ?? (config.target_defaults = {});
+    defaults.defines = unique([...(defaults.defines ?? []), 'RAWELECTRON_WITH_JXR']);
+    defaults.include_dirs = unique([
+      ...(defaults.include_dirs ?? []),
+      path.join(jxrRoot, 'common', 'include'),
+      path.join(jxrRoot, 'image', 'sys'),
+      path.join(jxrRoot, 'jxrgluelib'),
+    ]);
+    defaults.libraries = unique([...(defaults.libraries ?? []), ...jxrLibraries]);
+  }
+  const avifRoot = path.join(thirdPartyDir, 'libavif');
+  const avifBuild = path.join(avifRoot, 'build-windows-x64');
+  const avifLibraries = [
+    path.join(avifBuild, 'Release', 'avif_internal.lib'),
+    path.join(avifBuild, '_deps', 'dav1d-install', 'lib', 'libdav1d.a'),
+  ];
+  if (avifLibraries.every(exists)) {
+    const defaults = config.target_defaults ?? (config.target_defaults = {});
+    defaults.defines = unique([...(defaults.defines ?? []), 'RAWELECTRON_WITH_AVIF', 'AVIF_STATIC']);
+    defaults.include_dirs = unique([...(defaults.include_dirs ?? []), path.join(avifRoot, 'include')]);
+    defaults.libraries = unique([...(defaults.libraries ?? []), ...avifLibraries]);
+  }
   fs.writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 

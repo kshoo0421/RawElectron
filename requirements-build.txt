@@ -1,2 +1,3 @@
 # Native third-party build tooling
 meson==1.7.2
+ninja==1.11.1.4

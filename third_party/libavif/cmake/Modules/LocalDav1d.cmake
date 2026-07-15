@@ -100,7 +100,7 @@ function(avif_build_local_dav1d)
         CONFIGURE_COMMAND
             ${CMAKE_COMMAND} -E env "PATH=${PATH}" "NINJA=${NINJA_EXECUTABLE}" ${MESON_EXECUTABLE} setup --buildtype=release
             --default-library=static
-            --prefix=<INSTALL_DIR> --libdir=lib -Denable_asm=${DAV1D_ENABLE_ASM} -Denable_tools=false -Denable_examples=false
+            --prefix=<INSTALL_DIR> --libdir=lib -Db_vscrt=mt -Denable_asm=${DAV1D_ENABLE_ASM} -Denable_tools=false -Denable_examples=false
             -Denable_tests=false ${EXTRA_ARGS} <SOURCE_DIR>
         BUILD_COMMAND ${CMAKE_COMMAND} -E env "PATH=${PATH}" ${NINJA_EXECUTABLE} -C <BINARY_DIR>
         INSTALL_COMMAND ${CMAKE_COMMAND} -E env "PATH=${PATH}" ${NINJA_EXECUTABLE} -C <BINARY_DIR> install

@@ -82,7 +82,16 @@ type ImageFile = {
 const imageFilters = [
   {
     name: 'Images',
-    extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'tif', 'tiff', 'arw', 'cr2', 'cr3', 'nef', 'nrw', 'dng', 'raf', 'orf', 'rw2', 'pef'],
+    extensions: [
+      'jpg', 'jpeg', 'jpe', 'png', 'apng', 'webp', 'bmp', 'dib',
+      'tif', 'tiff', 'jp2', 'j2k', 'jpc', 'pnm', 'pbm', 'pgm', 'ppm', 'pam', 'pfm',
+      'sr', 'ras', 'hdr', 'pic', 'exr',
+      'avif', 'jxr', 'wdp', 'hdp',
+      '3fr', 'ari', 'arw', 'bay', 'bmq', 'cap', 'cine', 'cr2', 'cr3', 'crw', 'cs1',
+      'dc2', 'dcr', 'dng', 'erf', 'fff', 'ia', 'iqe', 'k25', 'kdc', 'mdc', 'mef',
+      'mos', 'mrw', 'nef', 'nrw', 'orf', 'ori', 'pef', 'ptx', 'pxn', 'qtk', 'raf',
+      'raw', 'rdc', 'rw2', 'rwl', 'rwz', 'sr2', 'srf', 'srw', 'sti', 'x3f',
+    ],
   },
 ];
 

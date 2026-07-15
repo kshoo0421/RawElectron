@@ -65,6 +65,53 @@ function buildLibRaw() {
   ], { shell: false, env });
 }
 
+function normalizedWindowsEnv() {
+  const env = {};
+  let combinedPath = '';
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.toLowerCase() === 'path') combinedPath = [combinedPath, value].filter(Boolean).join(';');
+    else env[key] = value;
+  }
+  env.Path = combinedPath;
+  return env;
+}
+
+function buildJxr() {
+  if (process.platform !== 'win32') return;
+  const root = path.resolve(projectRoot, '..', '..', 'third_party', 'jxrlib');
+  const projects = [
+    path.join(root, 'image', 'vc12projects', 'CommonLib_vc12.vcxproj'),
+    path.join(root, 'image', 'vc12projects', 'DecodeLib_vc12.vcxproj'),
+    path.join(root, 'image', 'vc12projects', 'EncodeLib_vc12.vcxproj'),
+    path.join(root, 'jxrgluelib', 'JXRGlueLib_vc12.vcxproj'),
+  ];
+  if (!projects.every((project) => fs.existsSync(project))) return;
+  for (const project of projects) {
+    run(readConfiguredMsBuildPath(), [
+      project,
+      '/t:Build',
+      '/nologo',
+      '/p:Configuration=Release',
+      '/p:Platform=x64',
+      '/p:PlatformToolset=v143',
+      '/p:WindowsTargetPlatformVersion=10.0',
+    ], { shell: false, env: normalizedWindowsEnv() });
+  }
+}
+
+function buildAvif() {
+  if (process.platform !== 'win32') return;
+  const workspaceRoot = path.resolve(projectRoot, '..', '..');
+  const source = path.join(workspaceRoot, 'third_party', 'libavif');
+  const dav1d = path.join(workspaceRoot, 'third_party', 'dav1d');
+  const build = path.join(source, 'build-windows-x64');
+  if (!fs.existsSync(path.join(source, 'CMakeLists.txt')) || !fs.existsSync(path.join(dav1d, 'meson.build'))) return;
+  run(path.join(projectRoot, 'scripts', 'build-avif.cmd'), [source, build, dav1d], {
+    shell: true,
+    env: normalizedWindowsEnv(),
+  });
+}
+
 function findFiles(root, predicate, limit = 2000) {
   const results = [];
   const queue = [root];
@@ -136,6 +183,8 @@ if (process.platform !== 'win32') {
 run(process.execPath, [writeOpenCvGypi]);
 nodeGyp(['configure']);
 buildLibRaw();
+buildJxr();
+buildAvif();
 run(process.execPath, [writeOpenCvGypi]);
 nodeGyp(['configure']);
 run(

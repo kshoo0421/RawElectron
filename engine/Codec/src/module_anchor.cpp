@@ -1,16 +1,24 @@
 #include <rawelectron/codec/codec.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <string_view>
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 #ifdef RAWELECTRON_WITH_LIBRAW
 #include <libraw/libraw.h>
+#endif
+#ifdef RAWELECTRON_WITH_JXR
+#include <JXRGlue.h>
+#endif
+#ifdef RAWELECTRON_WITH_AVIF
+#include <avif/avif.h>
 #endif
 
 namespace rawelectron::codec {
@@ -53,16 +61,109 @@ image_core::Status OpenCvDecoder::decode(const std::string& path, image_core::Bi
   const auto read_status = read_file(path, file_bytes);
   if (!read_status.ok()) return read_status;
 
-#ifdef RAWELECTRON_WITH_LIBRAW
   const auto extension = utf8_path(path).extension().u8string();
   std::string lowered_extension(extension.begin(), extension.end());
   std::transform(lowered_extension.begin(), lowered_extension.end(), lowered_extension.begin(), [](unsigned char value) {
     return static_cast<char>(std::tolower(value));
   });
-  const bool is_raw = lowered_extension == ".arw" || lowered_extension == ".cr2" ||
-      lowered_extension == ".cr3" || lowered_extension == ".nef" || lowered_extension == ".nrw" ||
-      lowered_extension == ".dng" || lowered_extension == ".raf" || lowered_extension == ".orf" ||
-      lowered_extension == ".rw2" || lowered_extension == ".pef";
+
+#ifdef RAWELECTRON_WITH_AVIF
+  if (lowered_extension == ".avif") {
+    avifDecoder* decoder = avifDecoderCreate();
+    if (!decoder) return {image_core::StatusCode::internal_error, "Failed to create AVIF decoder"};
+    avifResult result = avifDecoderSetIOMemory(decoder, file_bytes.data(), file_bytes.size());
+    if (result == AVIF_RESULT_OK) result = avifDecoderParse(decoder);
+    if (result == AVIF_RESULT_OK) result = avifDecoderNextImage(decoder);
+    if (result != AVIF_RESULT_OK || !decoder->image) {
+      const std::string message = std::string("AVIF decode failed: ") + avifResultToString(result);
+      avifDecoderDestroy(decoder);
+      return {image_core::StatusCode::invalid_argument, message};
+    }
+    avifRGBImage rgb;
+    avifRGBImageSetDefaults(&rgb, decoder->image);
+    rgb.format = AVIF_RGB_FORMAT_RGBA;
+    rgb.depth = 8;
+    result = avifRGBImageAllocatePixels(&rgb);
+    if (result == AVIF_RESULT_OK) result = avifImageYUVToRGB(decoder->image, &rgb);
+    if (result != AVIF_RESULT_OK) {
+      avifRGBImageFreePixels(&rgb);
+      avifDecoderDestroy(decoder);
+      return {image_core::StatusCode::invalid_argument, std::string("AVIF RGB conversion failed: ") + avifResultToString(result)};
+    }
+    output.size = {decoder->image->width, decoder->image->height};
+    output.format = image_core::PixelFormat::rgba8;
+    const size_t row_size = static_cast<size_t>(decoder->image->width) * 4;
+    output.pixels.resize(row_size * decoder->image->height);
+    for (std::uint32_t row = 0; row < decoder->image->height; ++row) {
+      std::copy_n(rgb.pixels + static_cast<size_t>(row) * rgb.rowBytes, row_size,
+                  output.pixels.data() + static_cast<size_t>(row) * row_size);
+    }
+    avifRGBImageFreePixels(&rgb);
+    avifDecoderDestroy(decoder);
+    return image_core::Status::success();
+  }
+#endif
+
+#ifdef RAWELECTRON_WITH_JXR
+  if (lowered_extension == ".jxr" || lowered_extension == ".wdp" || lowered_extension == ".hdp") {
+    PKFactory* factory = nullptr;
+    PKCodecFactory* codec_factory = nullptr;
+    WMPStream* stream = nullptr;
+    PKImageDecode* decoder = nullptr;
+    PKFormatConverter* converter = nullptr;
+    auto release = [&]() {
+      if (converter) converter->Release(&converter);
+      if (decoder) decoder->Release(&decoder);
+      if (stream) stream->Close(&stream);
+      if (codec_factory) codec_factory->Release(&codec_factory);
+      if (factory) factory->Release(&factory);
+    };
+    ERR error = PKCreateFactory(&factory, PK_SDK_VERSION);
+    if (error == WMP_errSuccess) error = PKCreateCodecFactory(&codec_factory, WMP_SDK_VERSION);
+    if (error == WMP_errSuccess) error = factory->CreateStreamFromMemory(&stream, file_bytes.data(), file_bytes.size());
+    if (error == WMP_errSuccess) error = PKImageDecode_Create_WMP(&decoder);
+    if (error == WMP_errSuccess) error = decoder->Initialize(decoder, stream);
+    if (error == WMP_errSuccess) error = codec_factory->CreateFormatConverter(&converter);
+    char output_extension[] = ".bmp";
+    if (error == WMP_errSuccess) {
+      error = converter->Initialize(converter, decoder, output_extension, GUID_PKPixelFormat32bppBGRA);
+    }
+    I32 width = 0;
+    I32 height = 0;
+    if (error == WMP_errSuccess) error = converter->GetSize(converter, &width, &height);
+    if (error != WMP_errSuccess || width <= 0 || height <= 0) {
+      release();
+      return {image_core::StatusCode::invalid_argument, "JPEG XR decode initialization failed"};
+    }
+    std::vector<std::uint8_t> bgra(static_cast<size_t>(width) * height * 4);
+    PKRect rectangle = {0, 0, width, height};
+    error = converter->Copy(converter, &rectangle, bgra.data(), static_cast<U32>(width * 4));
+    if (error != WMP_errSuccess) {
+      release();
+      return {image_core::StatusCode::invalid_argument, "JPEG XR pixel decode failed"};
+    }
+    output.size = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)};
+    output.format = image_core::PixelFormat::rgba8;
+    output.pixels.resize(bgra.size());
+    for (size_t pixel = 0; pixel < bgra.size(); pixel += 4) {
+      output.pixels[pixel] = bgra[pixel + 2];
+      output.pixels[pixel + 1] = bgra[pixel + 1];
+      output.pixels[pixel + 2] = bgra[pixel];
+      output.pixels[pixel + 3] = bgra[pixel + 3];
+    }
+    release();
+    return image_core::Status::success();
+  }
+#endif
+
+#ifdef RAWELECTRON_WITH_LIBRAW
+  static constexpr std::array<std::string_view, 43> raw_extensions = {
+      ".3fr", ".ari", ".arw", ".bay", ".bmq", ".cap", ".cine", ".cr2", ".cr3", ".crw", ".cs1",
+      ".dc2", ".dcr", ".dng", ".erf", ".fff", ".ia", ".iqe", ".k25", ".kdc", ".mdc", ".mef",
+      ".mos", ".mrw", ".nef", ".nrw", ".orf", ".ori", ".pef", ".ptx", ".pxn", ".qtk", ".raf",
+      ".raw", ".rdc", ".rw2", ".rwl", ".rwz", ".sr2", ".srf", ".srw", ".sti", ".x3f"};
+  const bool is_raw = std::find(raw_extensions.begin(), raw_extensions.end(), lowered_extension) !=
+      raw_extensions.end();
   if (is_raw) {
     LibRaw raw;
     raw.imgdata.params.output_bps = 8;
