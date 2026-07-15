@@ -14,7 +14,8 @@ const findNativeRuntimeLibraries = (root: string): string[] => {
   const results: string[] = [];
   const queue = [root];
   while (queue.length) {
-    const current = queue.shift()!;
+    const current = queue.shift();
+    if (!current) continue;
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const entryPath = path.join(current, entry.name);
       if (entry.isDirectory()) queue.push(entryPath);
@@ -30,9 +31,6 @@ const opencvInstallRoot = path.resolve(__dirname, '..', '..', 'third_party', 'op
 
 const nativeResourceCandidates = [
   path.resolve(__dirname, 'native', 'build', 'Release', 'rawelectron_engine.node'),
-  path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin', 'opencv_core4100.dll'),
-  path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin', 'opencv_imgcodecs4100.dll'),
-  path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install', 'x64', 'vc17', 'bin', 'opencv_imgproc4100.dll'),
   ...findNativeRuntimeLibraries(opencvInstallRoot),
 ].filter((resourcePath) => fs.existsSync(resourcePath));
 

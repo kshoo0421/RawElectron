@@ -35,6 +35,7 @@ import {
   WandSparkles,
 } from 'lucide-react';
 import type {
+  DebugLogEntry,
   EditParams,
   EngineWorkerRenderRequest,
 } from './shared/engineTypes';
@@ -97,6 +98,8 @@ declare global {
         height: number;
         url: string;
       }>;
+      getDebugLogs: () => Promise<DebugLogEntry[]>;
+      onDebugLog: (callback: (entry: DebugLogEntry) => void) => () => void;
       engineWorker: {
         exportRenderedImage: (request: unknown) => Promise<{ path: string }>;
       };
@@ -374,6 +377,7 @@ function updateSectionToggle(sections: ToolSection[], sectionId: ToolSectionId, 
 }
 
 function App() {
+  const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [theme, setTheme] = useState<ThemeMode>('dark');
   const [dpiUiScale, setDpiUiScale] = useState(getDpiScale);
   const [monitorDpiPercent, setMonitorDpiPercent] = useState(getMonitorDpiPercent);
@@ -416,6 +420,25 @@ function App() {
     generativeAi,
     selectedRatio,
   });
+
+  useEffect(() => {
+    let active = true;
+    void window.rawElectron.getDebugLogs().then((entries) => {
+      if (active) {
+        setDebugLogs((current) => {
+          const combined = new Map([...entries, ...current].map((entry) => [entry.id, entry]));
+          return [...combined.values()].sort((a, b) => a.id - b.id).slice(-1000);
+        });
+      }
+    });
+    const unsubscribe = window.rawElectron.onDebugLog((entry) => {
+      setDebugLogs((current) => [...current.filter((item) => item.id !== entry.id), entry].slice(-1000));
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     const updateScale = () => {
@@ -697,6 +720,7 @@ function App() {
           setActiveTool(tool);
         }} />
       </main>
+      <DebugLogPanel logs={debugLogs} onClear={() => setDebugLogs([])} />
       {isModalTool && (
         <div className="action-footer">
           <button className="icon-button" aria-label="되돌리기">
@@ -726,6 +750,36 @@ function App() {
         </div>
       )}
     </div>
+  );
+}
+
+function DebugLogPanel({ logs, onClear }: { logs: DebugLogEntry[]; onClear: () => void }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [logs]);
+
+  return (
+    <section className="debug-log-panel" aria-label="디버깅 로그">
+      <header className="debug-log-header">
+        <strong>디버깅 로그</strong>
+        <span className="debug-log-count">{logs.length}개</span>
+        <button onClick={onClear} disabled={!logs.length}>지우기</button>
+      </header>
+      <div className="debug-log-list" ref={scrollRef} role="log" aria-live="polite">
+        {!logs.length && <div className="debug-log-empty">표시할 로그가 없습니다.</div>}
+        {logs.map((entry) => (
+          <div className={`debug-log-row level-${entry.level}`} key={entry.id}>
+            <time>{new Date(entry.timestamp).toLocaleTimeString('ko-KR', { hour12: false })}</time>
+            <span className="debug-log-level">{entry.level.toUpperCase()}</span>
+            <span className="debug-log-source">[{entry.source}]</span>
+            <span className="debug-log-message">{entry.message}</span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

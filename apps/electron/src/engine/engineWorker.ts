@@ -43,7 +43,8 @@ class WorkerClient {
       else pending.resolve(message.result);
     });
     this.worker.on('error', (error) => {
-      for (const pending of this.pending.values()) pending.reject(error);
+      const workerError = error instanceof Error ? error : new Error(String(error));
+      for (const pending of this.pending.values()) pending.reject(workerError);
       this.pending.clear();
     });
   }

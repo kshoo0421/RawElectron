@@ -16,6 +16,8 @@ import type {
   EditParams,
   EngineWorkerExportRequest,
   EngineWorkerRenderRequest,
+  DebugLogEntry,
+  DebugLogLevel,
 } from './shared/engineTypes';
 
 protocol.registerSchemesAsPrivileged([
@@ -37,6 +39,25 @@ if (started) {
 
 const engineWorker = new EngineWorker();
 const previewRoot = path.join(app.getPath('temp'), 'RawElectron', 'preview');
+const debugLogs: DebugLogEntry[] = [];
+let nextDebugLogId = 1;
+
+function debugLog(level: DebugLogLevel, source: string, message: string) {
+  const entry: DebugLogEntry = {
+    id: nextDebugLogId++,
+    timestamp: new Date().toISOString(),
+    level,
+    source,
+    message,
+  };
+  debugLogs.push(entry);
+  if (debugLogs.length > 1000) debugLogs.shift();
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('debug-log:entry', entry);
+  }
+}
+
+ipcMain.handle('debug-logs:list', () => debugLogs);
 
 type ImageFile = {
   id: number;
@@ -66,6 +87,7 @@ async function toImageFile(filePath: string): Promise<ImageFile> {
 }
 
 ipcMain.handle('images:open', async (): Promise<ImageFile[]> => {
+  debugLog('info', '파일', '이미지 선택 창을 열었습니다.');
   const result = await dialog.showOpenDialog({
     title: 'Open images',
     properties: ['openFile', 'multiSelections'],
@@ -73,13 +95,22 @@ ipcMain.handle('images:open', async (): Promise<ImageFile[]> => {
   });
 
   if (result.canceled) {
+    debugLog('debug', '파일', '이미지 열기가 취소되었습니다.');
     return [];
   }
-
-  return Promise.all(result.filePaths.map(toImageFile));
+  debugLog('info', '엔진', `${result.filePaths.length}개 이미지를 불러오는 중입니다.`);
+  try {
+    const images = await Promise.all(result.filePaths.map(toImageFile));
+    debugLog('info', '엔진', `${images.length}개 이미지 로드를 완료했습니다.`);
+    return images;
+  } catch (error) {
+    debugLog('error', '엔진', `이미지 로드 실패: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
 });
 
 ipcMain.handle('images:export', async (_event, imageId: number, params: EditParams) => {
+  debugLog('info', '내보내기', `이미지 #${imageId} 저장 위치를 선택하는 중입니다.`);
   const sourcePath = engineWorker.getImagePath(imageId);
   const result = await dialog.showSaveDialog({
     title: 'Export image',
@@ -88,15 +119,18 @@ ipcMain.handle('images:export', async (_event, imageId: number, params: EditPara
   });
 
   if (result.canceled || !result.filePath) {
+    debugLog('debug', '내보내기', '내보내기가 취소되었습니다.');
     return { canceled: true };
   }
-
-  await engineWorker.exportRenderedImage({
-    imageId,
-    outputPath: result.filePath,
-    params,
-  });
-  return { canceled: false, path: result.filePath };
+  try {
+    debugLog('info', '내보내기', `이미지 #${imageId} 렌더링을 시작합니다.`);
+    await engineWorker.exportRenderedImage({ imageId, outputPath: result.filePath, params });
+    debugLog('info', '내보내기', `저장을 완료했습니다: ${result.filePath}`);
+    return { canceled: false, path: result.filePath };
+  } catch (error) {
+    debugLog('error', '내보내기', `저장 실패: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
 });
 
 ipcMain.handle(
@@ -115,11 +149,20 @@ ipcMain.handle('engine-preview-file:render', async (_event, request: EngineWorke
   fs.mkdirSync(previewRoot, { recursive: true });
   const fileName = `${request.imageId}-${request.quality}-${request.requestId}.png`;
   const outputPath = path.join(previewRoot, fileName);
-  const result = await engineWorker.renderPreviewFile(request, outputPath);
-  return { ...result, url: `rawelectron://preview/${fileName}` };
+  const startedAt = performance.now();
+  debugLog('debug', '프리뷰', `#${request.requestId} ${request.quality} 렌더링 시작 (${width}×${height})`);
+  try {
+    const result = await engineWorker.renderPreviewFile(request, outputPath);
+    debugLog('info', '프리뷰', `#${request.requestId} ${request.quality} 렌더링 완료 (${Math.round(performance.now() - startedAt)}ms)`);
+    return { ...result, url: `rawelectron://preview/${fileName}` };
+  } catch (error) {
+    debugLog('error', '프리뷰', `#${request.requestId} 렌더링 실패: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
 });
 
 const createWindow = () => {
+  debugLog('info', '앱', '메인 창을 생성합니다.');
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 1440,
@@ -151,9 +194,12 @@ const createWindow = () => {
     mainWindow.loadURL('rawelectron://bundle/index.html');
   }
 
+  mainWindow.webContents.once('did-finish-load', () => debugLog('info', '앱', 'GUI 로드를 완료했습니다.'));
+
 };
 
 app.whenReady().then(() => {
+  debugLog('info', '앱', 'Electron 초기화를 완료했습니다.');
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
     callback(false);
   });

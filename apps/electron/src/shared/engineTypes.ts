@@ -88,3 +88,13 @@ export type EngineWorkerExportRequest = {
   outputPath: string;
   params: EditParams;
 };
+
+export type DebugLogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+export type DebugLogEntry = {
+  id: number;
+  timestamp: string;
+  level: DebugLogLevel;
+  source: string;
+  message: string;
+};
