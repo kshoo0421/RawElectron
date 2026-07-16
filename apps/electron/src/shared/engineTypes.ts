@@ -55,10 +55,10 @@ export type EditParams = {
   moire: number;
   defringe: number;
   curves: {
-    rgb: number[];
-    red: number[];
-    green: number[];
-    blue: number[];
+    rgb: Array<{ x: number; y: number }>;
+    red: Array<{ x: number; y: number }>;
+    green: Array<{ x: number; y: number }>;
+    blue: Array<{ x: number; y: number }>;
   };
   crop: CropParams;
   remove: RemoveParams;

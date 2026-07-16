@@ -27,17 +27,44 @@ double luminance(double red, double green, double blue) {
   return red * 0.2126 + green * 0.7152 + blue * 0.0722;
 }
 
-bool is_identity_curve(const std::array<double, 5>& curve) {
-  static constexpr std::array<double, 5> identity = {0.0, 0.25, 0.5, 0.75, 1.0};
-  return curve == identity;
-}
+double apply_curve(const std::vector<image_core::Adjustment::CurvePoint>& custom_points, double value) {
+  if (custom_points.empty()) return std::clamp(value, 0.0, 1.0);
+  std::vector<image_core::Adjustment::CurvePoint> points;
+  points.reserve(custom_points.size() + 2);
+  points.push_back({0.0, 0.0});
+  points.insert(points.end(), custom_points.begin(), custom_points.end());
+  points.push_back({1.0, 1.0});
+  std::sort(points.begin(), points.end(), [](const auto& left, const auto& right) {
+    return left.x < right.x;
+  });
 
-double apply_curve(const std::array<double, 5>& curve, double value) {
-  const double scaled = std::clamp(value, 0.0, 1.0) * 4.0;
-  const std::size_t left = std::min<std::size_t>(3, static_cast<std::size_t>(scaled));
-  const double fraction = scaled - static_cast<double>(left);
+  const double x = std::clamp(value, 0.0, 1.0);
+  std::size_t segment = 0;
+  while (segment + 2 < points.size() && x > points[segment + 1].x) ++segment;
+  const auto& left = points[segment];
+  const auto& right = points[segment + 1];
+  const double width = std::max(1e-6, right.x - left.x);
+  const double t = std::clamp((x - left.x) / width, 0.0, 1.0);
+  const auto slope = [&](std::size_t index) {
+    if (index == 0) {
+      return (points[1].y - points[0].y) / std::max(1e-6, points[1].x - points[0].x);
+    }
+    if (index + 1 == points.size()) {
+      return (points[index].y - points[index - 1].y) /
+          std::max(1e-6, points[index].x - points[index - 1].x);
+    }
+    return (points[index + 1].y - points[index - 1].y) /
+        std::max(1e-6, points[index + 1].x - points[index - 1].x);
+  };
+  const double m0 = slope(segment) * width;
+  const double m1 = slope(segment + 1) * width;
+  const double t2 = t * t;
+  const double t3 = t2 * t;
   return std::clamp(
-      curve[left] + (curve[left + 1] - curve[left]) * fraction,
+      (2.0 * t3 - 3.0 * t2 + 1.0) * left.y +
+      (t3 - 2.0 * t2 + t) * m0 +
+      (-2.0 * t3 + 3.0 * t2) * right.y +
+      (t3 - t2) * m1,
       0.0,
       1.0);
 }
@@ -51,8 +78,8 @@ bool is_identity(const image_core::Adjustment& value) {
       value.sharpening == 0.0 && value.luminance_noise == 0.0 && value.color_noise == 0.0 &&
       value.moire == 0.0 && value.defringe == 0.0 &&
       !value.remove_chromatic_aberration && !value.lens_correction &&
-      is_identity_curve(value.curve_rgb) && is_identity_curve(value.curve_red) &&
-      is_identity_curve(value.curve_green) && is_identity_curve(value.curve_blue);
+      value.curve_rgb.empty() && value.curve_red.empty() &&
+      value.curve_green.empty() && value.curve_blue.empty();
 }
 
 void apply_spatial_detail(

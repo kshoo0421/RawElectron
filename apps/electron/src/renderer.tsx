@@ -22,13 +22,13 @@ type ToolSection = {
 };
 
 type CurveChannel = 'rgb' | 'red' | 'green' | 'blue';
-type Curves = Record<CurveChannel, number[]>;
-const identityCurve = [0, 0.25, 0.5, 0.75, 1];
+type CurvePoint = { x: number; y: number };
+type Curves = Record<CurveChannel, CurvePoint[]>;
 const identityCurves: Curves = {
-  rgb: [...identityCurve],
-  red: [...identityCurve],
-  green: [...identityCurve],
-  blue: [...identityCurve],
+  rgb: [],
+  red: [],
+  green: [],
+  blue: [],
 };
 
 type ImageFile = {
@@ -815,7 +815,7 @@ function AdjustmentPanel({
   sections: ToolSection[];
   curves: Curves;
   onSlider: (sectionId: ToolSectionId, controlId: string, value: number) => void;
-  onCurveChange: (channel: CurveChannel, points: number[]) => void;
+  onCurveChange: (channel: CurveChannel, points: CurvePoint[]) => void;
 }) {
   return (
     <>
@@ -843,7 +843,7 @@ function CurveEditor({
   onChange,
 }: {
   curves: Curves;
-  onChange: (channel: CurveChannel, points: number[]) => void;
+  onChange: (channel: CurveChannel, points: CurvePoint[]) => void;
 }) {
   const [channel, setChannel] = useState<CurveChannel>('rgb');
   const svgRef = useRef<SVGSVGElement>(null);
@@ -855,16 +855,55 @@ function CurveEditor({
     green: '#54d17a',
     blue: '#6598ff',
   };
-  const path = points.map((value, index) =>
-    `${index === 0 ? 'M' : 'L'} ${index * 25} ${(1 - value) * 100}`).join(' ');
+  const curveValue = (x: number) => {
+    const allPoints = [{ x: 0, y: 0 }, ...points, { x: 1, y: 1 }];
+    let segment = 0;
+    while (segment + 2 < allPoints.length && x > allPoints[segment + 1].x) segment += 1;
+    const left = allPoints[segment];
+    const right = allPoints[segment + 1];
+    const width = Math.max(0.000001, right.x - left.x);
+    const t = Math.min(1, Math.max(0, (x - left.x) / width));
+    const slope = (index: number) => {
+      if (index === 0) return (allPoints[1].y - allPoints[0].y) / Math.max(0.000001, allPoints[1].x - allPoints[0].x);
+      if (index + 1 === allPoints.length) {
+        return (allPoints[index].y - allPoints[index - 1].y) /
+          Math.max(0.000001, allPoints[index].x - allPoints[index - 1].x);
+      }
+      return (allPoints[index + 1].y - allPoints[index - 1].y) /
+        Math.max(0.000001, allPoints[index + 1].x - allPoints[index - 1].x);
+    };
+    const m0 = slope(segment) * width;
+    const m1 = slope(segment + 1) * width;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return Math.min(1, Math.max(0,
+      (2 * t3 - 3 * t2 + 1) * left.y +
+      (t3 - 2 * t2 + t) * m0 +
+      (-2 * t3 + 3 * t2) * right.y +
+      (t3 - t2) * m1));
+  };
+  const path = Array.from({ length: 65 }, (_, index) => {
+    const x = index / 64;
+    return `${index === 0 ? 'M' : 'L'} ${x * 100} ${(1 - curveValue(x)) * 100}`;
+  }).join(' ');
 
-  const updatePoint = (index: number, clientY: number) => {
+  const pointerPosition = (clientX: number, clientY: number) => {
     const svg = svgRef.current;
-    if (!svg) return;
+    if (!svg) return null;
     const rect = svg.getBoundingClientRect();
-    const value = Math.min(1, Math.max(0, 1 - (clientY - rect.top) / rect.height));
+    return {
+      x: Math.min(0.999, Math.max(0.001, (clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, 1 - (clientY - rect.top) / rect.height)),
+    };
+  };
+
+  const updatePoint = (index: number, clientX: number, clientY: number) => {
+    const position = pointerPosition(clientX, clientY);
+    if (!position) return;
     const next = [...points];
-    next[index] = value;
+    const minimumX = index === 0 ? 0.001 : next[index - 1].x + 0.01;
+    const maximumX = index + 1 === next.length ? 0.999 : next[index + 1].x - 0.01;
+    next[index] = { x: Math.min(maximumX, Math.max(minimumX, position.x)), y: position.y };
     onChange(channel, next);
   };
 
@@ -881,15 +920,21 @@ function CurveEditor({
             {item === 'rgb' ? 'RGB' : item === 'red' ? 'R' : item === 'green' ? 'G' : 'B'}
           </button>
         ))}
-        <button className="curve-reset" onClick={() => onChange(channel, [...identityCurve])}>초기화</button>
+        <button className="curve-reset" onClick={() => onChange(channel, [])}>초기화</button>
       </div>
       <svg
         ref={svgRef}
         className="curve-graph"
         viewBox="0 0 100 100"
         preserveAspectRatio="none"
+        onDoubleClick={(event) => {
+          if (points.length >= 8) return;
+          const position = pointerPosition(event.clientX, event.clientY);
+          if (!position) return;
+          onChange(channel, [...points, position].sort((left, right) => left.x - right.x));
+        }}
         onPointerMove={(event) => {
-          if (dragPoint !== null) updatePoint(dragPoint, event.clientY);
+          if (dragPoint !== null) updatePoint(dragPoint, event.clientX, event.clientY);
         }}
         onPointerUp={(event) => {
           if (svgRef.current?.hasPointerCapture(event.pointerId)) svgRef.current.releasePointerCapture(event.pointerId);
@@ -900,23 +945,32 @@ function CurveEditor({
         <path className="curve-grid" d="M 25 0 V 100 M 50 0 V 100 M 75 0 V 100 M 0 25 H 100 M 0 50 H 100 M 0 75 H 100" />
         <path className="curve-diagonal" d="M 0 100 L 100 0" />
         <path className="curve-line" d={path} style={{ stroke: colors[channel] }} />
-        {points.map((value, index) => (
+        {points.map((point, index) => (
           <circle
             key={index}
-            cx={index * 25}
-            cy={(1 - value) * 100}
+            cx={point.x * 100}
+            cy={(1 - point.y) * 100}
             r="3.2"
             style={{ stroke: colors[channel] }}
             onPointerDown={(event) => {
               event.preventDefault();
               svgRef.current?.setPointerCapture(event.pointerId);
               setDragPoint(index);
-              updatePoint(index, event.clientY);
+              updatePoint(index, event.clientX, event.clientY);
             }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              onChange(channel, points.filter((_, pointIndex) => pointIndex !== index));
+            }}
+            onDoubleClick={(event) => event.stopPropagation()}
           />
         ))}
       </svg>
-      <div className="curve-labels"><span>그림자</span><span>중간톤</span><span>하이라이트</span></div>
+      <div className="curve-labels">
+        <span>더블클릭: 점 추가</span>
+        <span>{points.length}/8</span>
+        <span>우클릭: 제거</span>
+      </div>
     </div>
   );
 }

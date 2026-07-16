@@ -81,8 +81,11 @@ bool GetBoolProperty(napi_env env, napi_value object, const char* name, bool fal
   return result;
 }
 
-std::array<double, 5> GetCurveProperty(napi_env env, napi_value object, const char* name) {
-  std::array<double, 5> result = {0.0, 0.25, 0.5, 0.75, 1.0};
+std::vector<rawelectron::image_core::Adjustment::CurvePoint> GetCurveProperty(
+    napi_env env,
+    napi_value object,
+    const char* name) {
+  std::vector<rawelectron::image_core::Adjustment::CurvePoint> result;
   if (!HasProperty(env, object, name)) return result;
   napi_value value = GetProperty(env, object, name);
   bool is_array = false;
@@ -90,14 +93,18 @@ std::array<double, 5> GetCurveProperty(napi_env env, napi_value object, const ch
   if (!is_array) return result;
   std::uint32_t length = 0;
   Check(env, napi_get_array_length(env, value, &length), "Failed to read curve length");
-  if (length != result.size()) return result;
+  if (length > 8) length = 8;
+  result.reserve(length);
   for (std::uint32_t index = 0; index < length; ++index) {
     napi_value item;
     Check(env, napi_get_element(env, value, index, &item), "Failed to read curve point");
-    double point = result[index];
-    Check(env, napi_get_value_double(env, item, &point), "Curve points must be numbers");
-    result[index] = std::clamp(point, 0.0, 1.0);
+    const double x = std::clamp(GetDoubleProperty(env, item, "x"), 0.001, 0.999);
+    const double y = std::clamp(GetDoubleProperty(env, item, "y"), 0.0, 1.0);
+    result.push_back({x, y});
   }
+  std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
+    return left.x < right.x;
+  });
   return result;
 }
 

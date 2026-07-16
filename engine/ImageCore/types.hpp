@@ -1,6 +1,6 @@
 #pragma once
 
-#include <array>
+#include <vector>
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -125,10 +125,14 @@ struct Adjustment {
   double defringe = 0.0;
   bool remove_chromatic_aberration = false;
   bool lens_correction = false;
-  std::array<double, 5> curve_rgb = {0.0, 0.25, 0.5, 0.75, 1.0};
-  std::array<double, 5> curve_red = {0.0, 0.25, 0.5, 0.75, 1.0};
-  std::array<double, 5> curve_green = {0.0, 0.25, 0.5, 0.75, 1.0};
-  std::array<double, 5> curve_blue = {0.0, 0.25, 0.5, 0.75, 1.0};
+  struct CurvePoint {
+    double x = 0.0;
+    double y = 0.0;
+  };
+  std::vector<CurvePoint> curve_rgb;
+  std::vector<CurvePoint> curve_red;
+  std::vector<CurvePoint> curve_green;
+  std::vector<CurvePoint> curve_blue;
 };
 
 using ImageId = std::uint64_t;

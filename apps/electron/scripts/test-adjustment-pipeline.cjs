@@ -39,6 +39,12 @@ const cases = {
   colorNoise: 100,
   moire: 100,
   defringe: 100,
+  curves: {
+    rgb: [{ x: 0.25, y: 0.1 }, { x: 0.7, y: 0.85 }],
+    red: [{ x: 0.5, y: 0.25 }],
+    green: [],
+    blue: [],
+  },
 };
 
 const differences = Object.fromEntries(Object.entries(cases).map(([name, value]) => {

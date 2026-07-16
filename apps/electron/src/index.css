@@ -229,7 +229,7 @@ button { color: inherit; }
 .curve-grid { stroke: #343a43; stroke-width: 1; }
 .curve-diagonal { stroke: #505762; stroke-width: 1; stroke-dasharray: 3 3; }
 .curve-line { stroke-width: 2; }
-.curve-graph circle { fill: #181c21; stroke-width: 2; vector-effect: non-scaling-stroke; cursor: ns-resize; }
+.curve-graph circle { fill: #181c21; stroke-width: 2; vector-effect: non-scaling-stroke; cursor: move; }
 .curve-labels { display: flex; justify-content: space-between; margin-top: 5px; color: var(--muted); font-size: 10px; }
 
 .control-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
