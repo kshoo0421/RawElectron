@@ -167,7 +167,8 @@ button { color: inherit; }
 .image-name { overflow: hidden; color: var(--text); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .image-item span:last-child { font-size: 11px; }
 
-.viewer { display: grid; grid-template-rows: minmax(0, 1fr) 34px; min-width: 0; min-height: 0; background: #0a0b0d; }
+.viewer { display: grid; grid-template-rows: minmax(0, 1fr) 142px 34px; min-width: 0; min-height: 0; background: #0a0b0d; }
+.viewer.histogram-hidden { grid-template-rows: minmax(0, 1fr) 34px; }
 .canvas { display: grid; place-items: center; min-width: 0; min-height: 0; padding: 28px; overflow: hidden; touch-action: none; user-select: none; }
 .canvas.pan-ready { cursor: grab; }
 .canvas.panning { cursor: grabbing; }
@@ -180,6 +181,38 @@ button { color: inherit; }
   will-change: transform;
 }
 .canvas img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none; box-shadow: 0 14px 44px rgba(0,0,0,.35); }
+.histogram-panel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid #252930;
+  background: #111419;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.histogram-item {
+  display: grid;
+  grid-template-rows: 15px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.histogram-item > span { color: #9098a3; font-size: 10px; font-weight: 650; }
+.histogram-item svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #292e36;
+  border-radius: 4px;
+  background: #0c0e11;
+}
+.histogram-item polygon { opacity: .22; }
+.histogram-item polyline { fill: none; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.histogram-grid { fill: none; stroke: #262b32; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .loading { color: #a8afb8; }
 .empty-state { max-width: 430px; color: #e8ebef; text-align: center; }
 .empty-state h1 { margin: 0 0 10px; font-size: 25px; }

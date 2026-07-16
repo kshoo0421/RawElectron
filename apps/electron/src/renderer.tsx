@@ -52,6 +52,13 @@ type SharedPreviewResult = {
   data: Uint8ClampedArray;
 };
 
+type Histograms = {
+  luminance: number[];
+  red: number[];
+  green: number[];
+  blue: number[];
+};
+
 declare global {
   interface Window {
     rawElectron: {
@@ -224,6 +231,7 @@ function App() {
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewQuality, setPreviewQuality] = useState<'proxy' | 'original' | null>(null);
+  const [histograms, setHistograms] = useState<Histograms | null>(null);
   const [statusMessage, setStatusMessage] = useState('이미지를 열어 편집을 시작하세요.');
   const [viewportPixels, setViewportPixels] = useState({ width: 1280, height: 960 });
   const [sections, setSections] = useState<ToolSection[]>(editSections);
@@ -231,6 +239,7 @@ function App() {
   const [renderQuality, setRenderQuality] = useState<'proxy' | 'original'>('original');
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
+  const [showHistograms, setShowHistograms] = useState(true);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('jpeg');
   const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState<{ path: string } | null>(null);
@@ -480,6 +489,7 @@ function App() {
     if (!selectedImage || !sharedPreviewReady) {
       setPreviewUrl(null);
       setPreviewQuality(null);
+      setHistograms(null);
       return undefined;
     }
 
@@ -534,6 +544,30 @@ function App() {
       }
       if (generatedPreviewUrl.current) URL.revokeObjectURL(generatedPreviewUrl.current);
       generatedPreviewUrl.current = url;
+      const nextHistograms: Histograms = {
+        luminance: Array(64).fill(0),
+        red: Array(64).fill(0),
+        green: Array(64).fill(0),
+        blue: Array(64).fill(0),
+      };
+      const sampleStep = Math.max(1, Math.floor((result.width * result.height) / 250_000));
+      let pixelIndex = 0;
+      for (let row = 0; row < result.height; row += 1) {
+        const rowOffset = row * result.stride;
+        for (let column = 0; column < result.width; column += 1, pixelIndex += 1) {
+          if (pixelIndex % sampleStep !== 0) continue;
+          const offset = rowOffset + column * 4;
+          const red = result.data[offset];
+          const green = result.data[offset + 1];
+          const blue = result.data[offset + 2];
+          const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
+          nextHistograms.red[Math.min(63, red >> 2)] += 1;
+          nextHistograms.green[Math.min(63, green >> 2)] += 1;
+          nextHistograms.blue[Math.min(63, blue >> 2)] += 1;
+          nextHistograms.luminance[Math.min(63, luminance >> 2)] += 1;
+        }
+      }
+      setHistograms(nextHistograms);
       setPreviewUrl(url);
       setPreviewQuality(result.quality);
       setStatusMessage(result.quality === 'proxy' ? '빠른 미리보기' : '고품질 미리보기');
@@ -841,7 +875,7 @@ function App() {
           </div>
         </aside>
 
-        <section className="viewer">
+        <section className={`viewer ${showHistograms ? '' : 'histogram-hidden'}`}>
           <div
             className={`canvas ${isSpacePressed ? 'pan-ready' : ''} ${isPanning ? 'panning' : ''}`}
             ref={canvasRef}
@@ -881,6 +915,7 @@ function App() {
               </div>
             )}
           </div>
+          {showHistograms && <HistogramPanel histograms={histograms} />}
           <footer className="statusbar">
             <span>{statusMessage}</span>
             {selectedImage && <span>{selectedImage.width} × {selectedImage.height}px</span>}
@@ -890,6 +925,9 @@ function App() {
               <button disabled={!selectedImage} onClick={() => changeZoom(zoom * 1.25)}>+</button>
               <output>{Math.round(zoom * 100)}%</output>
             </div>
+            <button onClick={() => setShowHistograms((current) => !current)}>
+              {showHistograms ? '히스토그램 숨기기' : '히스토그램 보기'}
+            </button>
             <button onClick={() => setShowLogs((current) => !current)}>
               {showLogs ? '로그 닫기' : `로그 ${debugLogs.length}`}
             </button>
@@ -962,6 +1000,36 @@ function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function HistogramPanel({ histograms }: { histograms: Histograms | null }) {
+  const graphs: Array<{ key: keyof Histograms; label: string; color: string }> = [
+    { key: 'luminance', label: '노출', color: '#dfe4eb' },
+    { key: 'red', label: 'R', color: '#ff6868' },
+    { key: 'green', label: 'G', color: '#54d17a' },
+    { key: 'blue', label: 'B', color: '#6598ff' },
+  ];
+  return (
+    <div className="histogram-panel" aria-label="RGB 색상 분포">
+      {graphs.map((graph) => {
+        const values = histograms?.[graph.key] ?? Array(64).fill(0);
+        const maximum = Math.max(1, ...values);
+        const points = values.map((value, index) =>
+          `${(index / 63) * 100},${100 - (value / maximum) * 92}`).join(' ');
+        const area = `0,100 ${points} 100,100`;
+        return (
+          <div className="histogram-item" key={graph.key}>
+            <span>{graph.label}</span>
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <path className="histogram-grid" d="M 25 0 V 100 M 50 0 V 100 M 75 0 V 100" />
+              <polygon points={area} style={{ fill: graph.color }} />
+              <polyline points={points} style={{ stroke: graph.color }} />
+            </svg>
+          </div>
+        );
+      })}
     </div>
   );
 }
