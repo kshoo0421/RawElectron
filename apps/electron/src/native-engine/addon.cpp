@@ -189,6 +189,25 @@ rawelectron::image_core::Adjustment ReadEditParams(napi_env env, napi_value requ
   params.defringe = GetDoubleProperty(env, value, "defringe");
   params.remove_chromatic_aberration = GetBoolProperty(env, value, "removeCa");
   params.lens_correction = GetBoolProperty(env, value, "lensCorrection");
+  if (HasProperty(env, value, "crop")) {
+    napi_value crop = GetProperty(env, value, "crop");
+    params.crop_enabled = GetBoolProperty(env, crop, "enabled");
+    params.rotation = std::clamp(GetDoubleProperty(env, crop, "rotation"), -45.0, 45.0);
+    params.quarter_turns = GetIntProperty(env, crop, "quarterTurns", 0);
+    params.flip_horizontal = GetBoolProperty(env, crop, "flipHorizontal");
+    params.flip_vertical = GetBoolProperty(env, crop, "flipVertical");
+    params.crop_x = std::clamp(GetDoubleProperty(env, crop, "x"), 0.0, 1.0);
+    params.crop_y = std::clamp(GetDoubleProperty(env, crop, "y"), 0.0, 1.0);
+    params.crop_width = std::clamp(GetDoubleProperty(env, crop, "width", 1.0), 0.01, 1.0);
+    params.crop_height = std::clamp(GetDoubleProperty(env, crop, "height", 1.0), 0.01, 1.0);
+    params.apply_crop = !HasProperty(env, crop, "applyCrop") || GetBoolProperty(env, crop, "applyCrop");
+    const std::string ratio = GetStringProperty(env, crop, "ratio");
+    if (ratio == "1:1") params.crop_ratio = 1.0;
+    else if (ratio == "4:3") params.crop_ratio = 4.0 / 3.0;
+    else if (ratio == "3:2") params.crop_ratio = 3.0 / 2.0;
+    else if (ratio == "16:9") params.crop_ratio = 16.0 / 9.0;
+    else if (ratio == "9:16") params.crop_ratio = 9.0 / 16.0;
+  }
   if (HasProperty(env, value, "curves")) {
     napi_value curves = GetProperty(env, value, "curves");
     params.curve_rgb = GetCurveProperty(env, curves, "rgb");

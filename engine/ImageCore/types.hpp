@@ -125,6 +125,17 @@ struct Adjustment {
   double defringe = 0.0;
   bool remove_chromatic_aberration = false;
   bool lens_correction = false;
+  bool crop_enabled = false;
+  double crop_ratio = 0.0;
+  double rotation = 0.0;
+  int quarter_turns = 0;
+  bool flip_horizontal = false;
+  bool flip_vertical = false;
+  double crop_x = 0.0;
+  double crop_y = 0.0;
+  double crop_width = 1.0;
+  double crop_height = 1.0;
+  bool apply_crop = true;
   struct CurvePoint {
     double x = 0.0;
     double y = 0.0;

@@ -111,10 +111,6 @@ image_core::Status EngineApi::render_preview(
   context.output_size = maximum_size;
   auto status = pipeline.execute(pipeline_input, context, processed);
   if (!status.ok()) return status;
-  if (source == PreviewSource::proxy) {
-    output = std::move(processed);
-    return image_core::Status::success();
-  }
   renderer::ProxyRenderer renderer;
   return renderer.render_preview(processed, maximum_size, output);
 }

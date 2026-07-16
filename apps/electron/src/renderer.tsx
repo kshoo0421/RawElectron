@@ -24,13 +24,26 @@ type ToolSection = {
 type CurveChannel = 'rgb' | 'red' | 'green' | 'blue';
 type CurvePoint = { x: number; y: number };
 type Curves = Record<CurveChannel, CurvePoint[]>;
-type EditState = { sections: ToolSection[]; curves: Curves };
-type PersistedEditState = { values: Record<string, number>; curves: Curves };
+type CropState = EditParams['crop'];
+type EditState = { sections: ToolSection[]; curves: Curves; crop: CropState };
+type PersistedEditState = { values: Record<string, number>; curves: Curves; crop?: CropState };
 const identityCurves: Curves = {
   rgb: [],
   red: [],
   green: [],
   blue: [],
+};
+const identityCrop: CropState = {
+  enabled: false,
+  ratio: '원본',
+  rotation: 0,
+  quarterTurns: 0,
+  flipHorizontal: false,
+  flipVertical: false,
+  x: 0,
+  y: 0,
+  width: 1,
+  height: 1,
 };
 
 type ImageFile = {
@@ -146,7 +159,7 @@ function sliderValue(sections: ToolSection[], id: string, fallback = 0) {
   return fallback;
 }
 
-function buildEditParams(sections: ToolSection[], curves: Curves): EditParams {
+function buildEditParams(sections: ToolSection[], curves: Curves, crop: CropState): EditParams {
   return {
     exposure: sliderValue(sections, 'exposure'),
     contrast: sliderValue(sections, 'contrast'),
@@ -171,7 +184,7 @@ function buildEditParams(sections: ToolSection[], curves: Curves): EditParams {
     moire: sliderValue(sections, 'moire'),
     defringe: sliderValue(sections, 'defringe'),
     curves,
-    crop: { enabled: false, ratio: '원본', rotation: 0 },
+    crop,
     remove: { brushSize: 0, detectObjects: false, generativeAi: false },
     mask: {
       exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0,
@@ -191,16 +204,90 @@ function updateSlider(sections: ToolSection[], sectionId: ToolSectionId, control
   } : section);
 }
 
+function maximumCropForRotation(imageAspect: number, degrees: number) {
+  const width = Math.max(0.0001, imageAspect);
+  const height = 1;
+  const angle = Math.abs(degrees) * Math.PI / 180;
+  const sin = Math.abs(Math.sin(angle));
+  const cos = Math.abs(Math.cos(angle));
+  const boundingWidth = width * cos + height * sin;
+  const boundingHeight = width * sin + height * cos;
+  if (sin < 0.000001) return { x: 0, y: 0, width: 1, height: 1 };
+
+  const widthIsLonger = width >= height;
+  const longSide = widthIsLonger ? width : height;
+  const shortSide = widthIsLonger ? height : width;
+  let cropWidth: number;
+  let cropHeight: number;
+  if (shortSide <= 2 * sin * cos * longSide || Math.abs(sin - cos) < 0.000001) {
+    const x = 0.5 * shortSide;
+    cropWidth = widthIsLonger ? x / sin : x / cos;
+    cropHeight = widthIsLonger ? x / cos : x / sin;
+  } else {
+    const cos2 = cos * cos - sin * sin;
+    cropWidth = (width * cos - height * sin) / cos2;
+    cropHeight = (height * cos - width * sin) / cos2;
+  }
+  const normalizedWidth = Math.min(1, Math.max(0.01, cropWidth / boundingWidth));
+  const normalizedHeight = Math.min(1, Math.max(0.01, cropHeight / boundingHeight));
+  return {
+    x: (1 - normalizedWidth) / 2,
+    y: (1 - normalizedHeight) / 2,
+    width: normalizedWidth,
+    height: normalizedHeight,
+  };
+}
+
+function boundingAspectForRotation(imageAspect: number, degrees: number) {
+  const radians = Math.abs(degrees) * Math.PI / 180;
+  const sin = Math.abs(Math.sin(radians));
+  const cos = Math.abs(Math.cos(radians));
+  return (imageAspect * cos + sin) / (imageAspect * sin + cos);
+}
+
+function maximumFixedRatioCrop(imageAspect: number, degrees: number, targetAspect: number) {
+  const radians = degrees * Math.PI / 180;
+  const sin = Math.sin(radians);
+  const cos = Math.cos(radians);
+  const boundingWidth = imageAspect * Math.abs(cos) + Math.abs(sin);
+  const boundingHeight = imageAspect * Math.abs(sin) + Math.abs(cos);
+  const fits = (halfHeight: number) => {
+    const halfWidth = halfHeight * targetAspect;
+    for (const x of [-halfWidth, halfWidth]) {
+      for (const y of [-halfHeight, halfHeight]) {
+        const sourceX = x * cos + y * sin;
+        const sourceY = -x * sin + y * cos;
+        if (Math.abs(sourceX) > imageAspect / 2 + 0.000001 ||
+            Math.abs(sourceY) > 0.5 + 0.000001) return false;
+      }
+    }
+    return true;
+  };
+  let low = 0;
+  let high = Math.min(boundingHeight / 2, boundingWidth / (2 * targetAspect));
+  for (let index = 0; index < 40; index += 1) {
+    const middle = (low + high) / 2;
+    if (fits(middle)) low = middle;
+    else high = middle;
+  }
+  const width = Math.min(1, (low * 2 * targetAspect) / boundingWidth);
+  const height = Math.min(1, (low * 2) / boundingHeight);
+  return { x: (1 - width) / 2, y: (1 - height) / 2, width, height };
+}
+
 function serializeEditState(state: EditState): PersistedEditState {
   return {
     values: Object.fromEntries(state.sections.flatMap((section) =>
       section.controls.map((control) => [control.id, control.value]))),
     curves: state.curves,
+    crop: state.crop,
   };
 }
 
 function deserializeEditState(stored: PersistedEditState | null): EditState {
-  if (!stored || typeof stored !== 'object') return { sections: editSections, curves: identityCurves };
+  if (!stored || typeof stored !== 'object') {
+    return { sections: editSections, curves: identityCurves, crop: identityCrop };
+  }
   const values = stored.values && typeof stored.values === 'object' ? stored.values : {};
   const sections = editSections.map((section) => ({
     ...section,
@@ -222,7 +309,10 @@ function deserializeEditState(stored: PersistedEditState | null): EditState {
         blue: Array.isArray(stored.curves.blue) ? stored.curves.blue : [],
       }
     : identityCurves;
-  return { sections, curves };
+  const crop = stored.crop && typeof stored.crop === 'object'
+    ? { ...identityCrop, ...stored.crop }
+    : identityCrop;
+  return { sections, curves, crop };
 }
 
 function App() {
@@ -236,6 +326,8 @@ function App() {
   const [viewportPixels, setViewportPixels] = useState({ width: 1280, height: 960 });
   const [sections, setSections] = useState<ToolSection[]>(editSections);
   const [curves, setCurves] = useState<Curves>(identityCurves);
+  const [crop, setCrop] = useState<CropState>(identityCrop);
+  const [controlTab, setControlTab] = useState<'adjustments' | 'crop'>('adjustments');
   const [renderQuality, setRenderQuality] = useState<'proxy' | 'original'>('original');
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
@@ -260,7 +352,7 @@ function App() {
     reject: (reason: Error) => void;
   }>());
   const [sharedPreviewReady, setSharedPreviewReady] = useState(false);
-  const editStateRef = useRef<EditState>({ sections: editSections, curves: identityCurves });
+  const editStateRef = useRef<EditState>({ sections: editSections, curves: identityCurves, crop: identityCrop });
   const undoStack = useRef<EditState[]>([]);
   const redoStack = useRef<EditState[]>([]);
   const transactionStart = useRef<EditState | null>(null);
@@ -268,8 +360,43 @@ function App() {
   const [, setHistoryVersion] = useState(0);
 
   const selectedImage = images.find((image) => image.id === selectedImageId) ?? null;
-  const editParams = useMemo(() => buildEditParams(sections, curves), [sections, curves]);
+  const cropImageAspect = selectedImage
+    ? (crop.quarterTurns % 2 === 0
+        ? selectedImage.width / selectedImage.height
+        : selectedImage.height / selectedImage.width)
+    : 1;
+  const cropStage = useMemo(() => {
+    if (!selectedImage) return null;
+    const deviceScale = window.devicePixelRatio || 1;
+    const availableWidth = Math.max(120, viewportPixels.width / deviceScale - 72);
+    const availableHeight = Math.max(120, viewportPixels.height / deviceScale - 180);
+    const sourceWidth = selectedImage.width;
+    const sourceHeight = selectedImage.height;
+    const totalRotation = crop.quarterTurns * 90 + crop.rotation;
+    const radians = Math.abs(totalRotation) * Math.PI / 180;
+    const boundingWidth = sourceWidth * Math.abs(Math.cos(radians)) +
+      sourceHeight * Math.abs(Math.sin(radians));
+    const boundingHeight = sourceWidth * Math.abs(Math.sin(radians)) +
+      sourceHeight * Math.abs(Math.cos(radians));
+    const scale = Math.min(availableWidth / boundingWidth, availableHeight / boundingHeight);
+    return {
+      width: boundingWidth * scale,
+      height: boundingHeight * scale,
+      imageWidth: sourceWidth * scale,
+      imageHeight: sourceHeight * scale,
+      totalRotation,
+    };
+  }, [selectedImage, viewportPixels, crop.rotation, crop.quarterTurns]);
+  const editParams = useMemo(() => buildEditParams(sections, curves, crop), [sections, curves, crop]);
   const [renderParams, setRenderParams] = useState(editParams);
+  const cropPreviewParams = useMemo(
+    () => buildEditParams(sections, curves, { ...identityCrop, applyCrop: false }),
+    [sections, curves],
+  );
+  const previewRenderParams = useMemo(
+    () => controlTab === 'crop' ? cropPreviewParams : renderParams,
+    [renderParams, cropPreviewParams, controlTab],
+  );
   const cloneEditState = (state: EditState): EditState => ({
     sections: state.sections.map((section) => ({
       ...section,
@@ -281,12 +408,14 @@ function App() {
       green: state.curves.green.map((point) => ({ ...point })),
       blue: state.curves.blue.map((point) => ({ ...point })),
     },
+    crop: { ...state.crop },
   });
   const restoreEditState = (state: EditState) => {
     const restored = cloneEditState(state);
     editStateRef.current = restored;
     setSections(restored.sections);
     setCurves(restored.curves);
+    setCrop(restored.crop);
     setRenderQuality('proxy');
   };
   const pushUndo = (state: EditState) => {
@@ -342,6 +471,14 @@ function App() {
       void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
     }
   };
+  const changeCrop = (nextCrop: CropState) => {
+    editStateRef.current = { ...editStateRef.current, crop: nextCrop };
+    setCrop(nextCrop);
+    setRenderQuality('proxy');
+    if (selectedImageId !== null) {
+      void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
+    }
+  };
 
   useEffect(() => {
     const requestId = ++editLoadRequest.current;
@@ -350,7 +487,7 @@ function App() {
     transactionStart.current = null;
     setHistoryVersion((value) => value + 1);
     if (selectedImageId === null) {
-      restoreEditState({ sections: editSections, curves: identityCurves });
+      restoreEditState({ sections: editSections, curves: identityCurves, crop: identityCrop });
       setRenderQuality('original');
       return;
     }
@@ -360,7 +497,7 @@ function App() {
       setRenderQuality('original');
     }).catch((error) => {
       if (requestId !== editLoadRequest.current) return;
-      restoreEditState({ sections: editSections, curves: identityCurves });
+      restoreEditState({ sections: editSections, curves: identityCurves, crop: identityCrop });
       setStatusMessage(`편집값 불러오기 실패: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, [selectedImageId]);
@@ -511,7 +648,7 @@ function App() {
           requestId,
           imageId: selectedImage.id,
           quality,
-          params: renderParams,
+          params: previewRenderParams,
           preview: { maxWidth: targetWidth, maxHeight: targetHeight },
         },
       });
@@ -591,7 +728,7 @@ function App() {
       cancelled = true;
       sharedPreviewRequests.current.delete(requestId);
     };
-  }, [selectedImage, renderParams, viewportPixels, renderQuality, sharedPreviewReady]);
+  }, [selectedImage, previewRenderParams, viewportPixels, renderQuality, sharedPreviewReady]);
 
   const openImages = async () => {
     try {
@@ -683,7 +820,7 @@ function App() {
   const resetAll = () => {
     if (selectedImageId === null) return;
     pushUndo(editStateRef.current);
-    restoreEditState({ sections: editSections, curves: identityCurves });
+    restoreEditState({ sections: editSections, curves: identityCurves, crop: identityCrop });
     void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
     setRenderQuality('original');
     setStatusMessage('모든 조정을 초기화했습니다.');
@@ -888,7 +1025,32 @@ function App() {
           >
             {selectedImage ? (
               previewUrl
-                ? <div
+                ? controlTab === 'crop' && cropStage
+                  ? <div
+                      className="crop-web-editor"
+                      style={{ width: cropStage.width, height: cropStage.height }}
+                    >
+                      <img
+                        ref={previewImageRef}
+                        className="crop-source-image"
+                        src={previewUrl}
+                        alt={selectedImage.name}
+                        draggable={false}
+                        style={{
+                          width: cropStage.imageWidth,
+                          height: cropStage.imageHeight,
+                          transform: `translate(-50%, -50%) rotate(${-cropStage.totalRotation}deg) scale(${crop.flipHorizontal ? -1 : 1}, ${crop.flipVertical ? -1 : 1})`,
+                        }}
+                      />
+                      <CropFrame
+                        crop={crop}
+                        imageAspect={cropImageAspect}
+                        onChange={changeCrop}
+                        onEditStart={beginEdit}
+                        onEditEnd={endEdit}
+                      />
+                    </div>
+                  : <div
                     className="image-transform"
                     style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` }}
                   >
@@ -914,6 +1076,32 @@ function App() {
                 <button className="button primary" onClick={openImages}>이미지 선택</button>
               </div>
             )}
+            {selectedImage && controlTab === 'crop' && (
+              <div
+                className="crop-viewport-overlay"
+                onPointerDown={(event) => event.stopPropagation()}
+                onDoubleClick={(event) => event.stopPropagation()}
+              >
+                <div className="viewport-angle">
+                  <AngleDial
+                    value={crop.rotation}
+                    onChange={(rotation) => {
+                      const oldBoundsAspect = boundingAspectForRotation(cropImageAspect, crop.rotation);
+                      const targetAspect = crop.width * oldBoundsAspect / Math.max(0.0001, crop.height);
+                      changeCrop({
+                        ...crop,
+                        ...maximumFixedRatioCrop(cropImageAspect, rotation, targetAspect),
+                        enabled: true,
+                        rotation,
+                      });
+                    }}
+                    onEditStart={beginEdit}
+                    onEditEnd={endEdit}
+                    hideHeading
+                  />
+                </div>
+              </div>
+            )}
           </div>
           {showHistograms && <HistogramPanel histograms={histograms} />}
           <footer className="statusbar">
@@ -935,20 +1123,42 @@ function App() {
         </section>
 
         <aside className="controls">
-          <div className="controls-heading">
-            <strong>기본 조정</strong>
-            <span>실시간 미리보기</span>
+          <div className="controls-heading control-tabs">
+            <button
+              className={controlTab === 'adjustments' ? 'active' : ''}
+              onClick={() => setControlTab('adjustments')}
+            >
+              보정
+            </button>
+            <button
+              className={controlTab === 'crop' ? 'active' : ''}
+              onClick={() => setControlTab('crop')}
+            >
+              자르기·회전
+            </button>
           </div>
           <div className="control-scroll">
             <fieldset className="adjustment-fieldset" disabled={!selectedImage}>
-              <AdjustmentPanel
-                sections={sections}
-                curves={curves}
-                onEditStart={beginEdit}
-                onEditEnd={endEdit}
-                onSlider={changeSliderValue}
-                onCurveChange={changeCurve}
-              />
+              {controlTab === 'adjustments' ? (
+                <AdjustmentPanel
+                  sections={sections}
+                  curves={curves}
+                  onEditStart={beginEdit}
+                  onEditEnd={endEdit}
+                  onSlider={changeSliderValue}
+                  onCurveChange={changeCurve}
+                />
+              ) : (
+                <CropPanel
+                  crop={crop}
+                  imageAspect={(crop.quarterTurns % 2 === 0
+                    ? selectedImage.width / selectedImage.height
+                    : selectedImage.height / selectedImage.width)}
+                  onChange={changeCrop}
+                  onEditStart={beginEdit}
+                  onEditEnd={endEdit}
+                />
+              )}
             </fieldset>
           </div>
           <div className="control-footer">
@@ -1000,6 +1210,286 @@ function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function CropFrame({
+  crop,
+  imageAspect,
+  onChange,
+  onEditStart,
+  onEditEnd,
+}: {
+  crop: CropState;
+  imageAspect: number;
+  onChange: (crop: CropState) => void;
+  onEditStart: () => void;
+  onEditEnd: () => void;
+}) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{
+    mode: 'move' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'top' | 'right' | 'bottom' | 'left';
+    startX: number;
+    startY: number;
+    crop: CropState;
+  } | null>(null);
+  const start = (mode: NonNullable<typeof drag.current>['mode'], event: React.PointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    frameRef.current?.setPointerCapture(event.pointerId);
+    drag.current = { mode, startX: event.clientX, startY: event.clientY, crop: { ...crop } };
+    onEditStart();
+  };
+  const move = (event: React.PointerEvent) => {
+    const active = drag.current;
+    const parent = frameRef.current?.parentElement;
+    if (!active || !parent) return;
+    const rect = parent.getBoundingClientRect();
+    const dx = (event.clientX - active.startX) / rect.width;
+    const dy = (event.clientY - active.startY) / rect.height;
+    let { x, y, width, height } = active.crop;
+    const safe = maximumCropForRotation(imageAspect, crop.rotation);
+    const safeRight = safe.x + safe.width;
+    const safeBottom = safe.y + safe.height;
+    const minimum = 0.08;
+    if (active.mode === 'move') {
+      x = Math.min(safeRight - width, Math.max(safe.x, x + dx));
+      y = Math.min(safeBottom - height, Math.max(safe.y, y + dy));
+    } else {
+      if (active.mode.includes('left')) {
+        const right = x + width;
+        x = Math.min(right - minimum, Math.max(safe.x, x + dx));
+        width = right - x;
+      }
+      if (active.mode.includes('right')) width = Math.min(safeRight - x, Math.max(minimum, width + dx));
+      if (active.mode.includes('top')) {
+        const bottom = y + height;
+        y = Math.min(bottom - minimum, Math.max(safe.y, y + dy));
+        height = bottom - y;
+      }
+      if (active.mode.includes('bottom')) height = Math.min(safeBottom - y, Math.max(minimum, height + dy));
+    }
+    onChange({ ...crop, enabled: true, x, y, width, height });
+  };
+  const stop = (event: React.PointerEvent) => {
+    if (!drag.current) return;
+    if (frameRef.current?.hasPointerCapture(event.pointerId)) frameRef.current.releasePointerCapture(event.pointerId);
+    drag.current = null;
+    onEditEnd();
+  };
+  return (
+    <div
+      ref={frameRef}
+      className="crop-frame"
+      style={{
+        left: `${crop.x * 100}%`,
+        top: `${crop.y * 100}%`,
+        width: `${crop.width * 100}%`,
+        height: `${crop.height * 100}%`,
+      }}
+      onPointerDown={(event) => start('move', event)}
+      onPointerMove={move}
+      onPointerUp={stop}
+      onPointerCancel={stop}
+    >
+      {(['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const).map((position) => (
+        <i key={position} className={`corner ${position}`} onPointerDown={(event) => start(position, event)} />
+      ))}
+      {(['top', 'right', 'bottom', 'left'] as const).map((position) => (
+        <i key={position} className={`edge ${position}`} onPointerDown={(event) => start(position, event)} />
+      ))}
+    </div>
+  );
+}
+
+function CropPanel({
+  crop,
+  imageAspect,
+  onChange,
+  onEditStart,
+  onEditEnd,
+}: {
+  crop: CropState;
+  imageAspect: number;
+  onChange: (crop: CropState) => void;
+  onEditStart: () => void;
+  onEditEnd: () => void;
+}) {
+  const update = (changes: Partial<CropState>) => onChange({
+    ...crop,
+    ...changes,
+    enabled: true,
+  });
+  const commit = (changes: Partial<CropState>) => {
+    onEditStart();
+    update(changes);
+    onEditEnd();
+  };
+  const changeRatio = (ratio: string) => {
+    if (ratio === '원본') {
+      commit({ ratio });
+      return;
+    }
+    const [wide, high] = ratio.split(':').map(Number);
+    const target = wide / high;
+    let width = 0.9;
+    let height = width * imageAspect / target;
+    if (height > 0.9) {
+      height = 0.9;
+      width = height * target / imageAspect;
+    }
+    commit({ ratio, x: (1 - width) / 2, y: (1 - height) / 2, width, height });
+  };
+  return (
+    <div className="crop-panel">
+      <section className="control-section">
+        <div className="crop-heading">
+          <strong>자르기 및 변환</strong>
+          <button onClick={() => {
+            onEditStart();
+            onChange(identityCrop);
+            onEditEnd();
+          }}>전체 초기화</button>
+        </div>
+        <label className="crop-field">
+          <span>비율</span>
+          <select value={crop.ratio} onChange={(event) => changeRatio(event.currentTarget.value)}>
+            <option value="원본">원본</option>
+            <option value="1:1">1:1</option>
+            <option value="4:3">4:3</option>
+            <option value="3:2">3:2</option>
+            <option value="16:9">16:9</option>
+            <option value="9:16">9:16</option>
+          </select>
+        </label>
+        <label className="slider-control">
+          <span>
+            <span>수평 맞춤</span>
+            <output>{crop.rotation.toFixed(1)}°</output>
+          </span>
+          <input
+            type="range"
+            tabIndex={-1}
+            min="-45"
+            max="45"
+            step="0.1"
+            value={crop.rotation}
+            onPointerDown={onEditStart}
+            onPointerUp={onEditEnd}
+            onPointerCancel={onEditEnd}
+            onChange={(event) => {
+              const rotation = Number(event.currentTarget.value);
+              const oldBoundsAspect = boundingAspectForRotation(imageAspect, crop.rotation);
+              const targetAspect = crop.width * oldBoundsAspect / Math.max(0.0001, crop.height);
+              update({ ...maximumFixedRatioCrop(imageAspect, rotation, targetAspect), rotation });
+            }}
+          />
+        </label>
+        <div className="crop-actions">
+          <button onClick={() => commit({ quarterTurns: (crop.quarterTurns + 3) % 4 })}>↶ 왼쪽 90°</button>
+          <button onClick={() => commit({ quarterTurns: (crop.quarterTurns + 1) % 4 })}>↷ 오른쪽 90°</button>
+          <button
+            className={crop.flipHorizontal ? 'active' : ''}
+            onClick={() => commit({ flipHorizontal: !crop.flipHorizontal })}
+          >
+            ↔ 가로 뒤집기
+          </button>
+          <button
+            className={crop.flipVertical ? 'active' : ''}
+            onClick={() => commit({ flipVertical: !crop.flipVertical })}
+          >
+            ↕ 세로 뒤집기
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AngleDial({
+  value,
+  onChange,
+  onEditStart,
+  onEditEnd,
+  hideHeading = false,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  onEditStart: () => void;
+  onEditEnd: () => void;
+  hideHeading?: boolean;
+}) {
+  const dialRef = useRef<SVGSVGElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const angle = Math.min(45, Math.max(-45, value));
+  const radians = (angle - 90) * Math.PI / 180;
+  const knobX = 100 + Math.cos(radians) * 72;
+  const knobY = 86 + Math.sin(radians) * 72;
+  const ticks = Array.from({ length: 19 }, (_, index) => {
+    const tickAngle = -45 + index * 5;
+    const tickRadians = (tickAngle - 90) * Math.PI / 180;
+    const outer = 72;
+    const inner = index % 3 === 0 ? 62 : 66;
+    return {
+      x1: 100 + Math.cos(tickRadians) * inner,
+      y1: 86 + Math.sin(tickRadians) * inner,
+      x2: 100 + Math.cos(tickRadians) * outer,
+      y2: 86 + Math.sin(tickRadians) * outer,
+    };
+  });
+  const updateFromPointer = (clientX: number, clientY: number) => {
+    const rect = dialRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = (clientX - rect.left) / rect.width * 200;
+    const y = (clientY - rect.top) / rect.height * 105;
+    const pointerAngle = Math.atan2(y - 86, x - 100) * 180 / Math.PI + 90;
+    onChange(Math.round(Math.min(45, Math.max(-45, pointerAngle)) * 10) / 10);
+  };
+  return (
+    <div className="angle-control">
+      {!hideHeading && <div className="angle-heading">
+        <span>수평 맞춤</span>
+        <button onClick={() => {
+          onEditStart();
+          onChange(0);
+          onEditEnd();
+        }}>{angle.toFixed(1)}°</button>
+      </div>}
+      <svg
+        ref={dialRef}
+        className={`angle-dial ${dragging ? 'dragging' : ''}`}
+        viewBox="0 0 200 105"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setDragging(true);
+          onEditStart();
+          updateFromPointer(event.clientX, event.clientY);
+        }}
+        onPointerMove={(event) => {
+          if (dragging) updateFromPointer(event.clientX, event.clientY);
+        }}
+        onPointerUp={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          setDragging(false);
+          onEditEnd();
+        }}
+        onPointerCancel={() => {
+          setDragging(false);
+          onEditEnd();
+        }}
+      >
+        <path className="angle-arc" d="M 49.1 35.1 A 72 72 0 0 1 150.9 35.1" />
+        {ticks.map((tick, index) => (
+          <line key={index} className={index === 9 ? 'angle-tick center' : 'angle-tick'} {...tick} />
+        ))}
+        <line className="angle-indicator" x1="100" y1="86" x2={knobX} y2={knobY} />
+        <circle className="angle-knob" cx={knobX} cy={knobY} r="7" />
+        <text x="100" y="100">{angle.toFixed(1)}°</text>
+      </svg>
     </div>
   );
 }

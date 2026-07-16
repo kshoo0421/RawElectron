@@ -2,6 +2,14 @@ export type CropParams = {
   enabled: boolean;
   ratio: string;
   rotation: number;
+  quarterTurns: number;
+  flipHorizontal: boolean;
+  flipVertical: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  applyCrop?: boolean;
 };
 
 export type RemoveParams = {
