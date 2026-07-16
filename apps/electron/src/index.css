@@ -182,6 +182,8 @@ button { color: inherit; }
 .viewer { display: grid; grid-template-rows: minmax(0, 1fr) 142px 34px; min-width: 0; min-height: 0; background: #000; }
 .viewer.histogram-hidden { grid-template-rows: minmax(0, 1fr) 34px; }
 .canvas { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; padding: 28px; overflow: hidden; background: #000; touch-action: none; user-select: none; }
+.canvas:focus { outline: none; }
+.canvas:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 65%, transparent); }
 .canvas.pan-ready { cursor: grab; }
 .canvas.panning { cursor: grabbing; }
 .image-transform {

@@ -902,10 +902,26 @@ function App() {
   };
 
   const handleViewerWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    if (!selectedImage) return;
+    if (!selectedImage || !event.ctrlKey || controlTab === 'crop') return;
     event.preventDefault();
-    const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
-    changeZoom(zoom * factor);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const factor = Math.exp(-event.deltaY * 0.002);
+    const nextZoom = Math.min(8, Math.max(0.1, zoom * factor));
+    if (nextZoom <= 1) {
+      setZoom(nextZoom);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const cursorX = event.clientX - (rect.left + rect.width / 2);
+    const cursorY = event.clientY - (rect.top + rect.height / 2);
+    const scale = nextZoom / zoom;
+    setPan({
+      x: cursorX - (cursorX - pan.x) * scale,
+      y: cursorY - (cursorY - pan.y) * scale,
+    });
+    setZoom(nextZoom);
   };
 
   const startPanning = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -935,6 +951,23 @@ function App() {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     setIsPanning(false);
+  };
+  const handleViewerKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!selectedImage || controlTab === 'crop') return;
+    const directions: Record<string, { x: number; y: number }> = {
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 },
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+    };
+    const direction = directions[event.key];
+    if (!direction) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 80 : 20;
+    setPan((current) => constrainedPan({
+      x: current.x - direction.x * step,
+      y: current.y - direction.y * step,
+    }));
   };
 
   return (
@@ -1051,12 +1084,15 @@ function App() {
           <div
             className={`canvas ${isSpacePressed ? 'pan-ready' : ''} ${isPanning ? 'panning' : ''}`}
             ref={canvasRef}
+            tabIndex={selectedImage && controlTab !== 'crop' ? 0 : -1}
+            aria-label="이미지 뷰포트. 방향키로 이동"
             onWheel={handleViewerWheel}
             onPointerDown={startPanning}
             onPointerMove={movePanning}
             onPointerUp={stopPanning}
             onPointerCancel={stopPanning}
             onDoubleClick={() => changeZoom(zoom === 1 ? 2 : 1)}
+            onKeyDown={handleViewerKeyDown}
           >
             {selectedImage ? (
               previewUrl
