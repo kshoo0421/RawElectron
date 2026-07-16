@@ -24,6 +24,8 @@ type ToolSection = {
 type CurveChannel = 'rgb' | 'red' | 'green' | 'blue';
 type CurvePoint = { x: number; y: number };
 type Curves = Record<CurveChannel, CurvePoint[]>;
+type EditState = { sections: ToolSection[]; curves: Curves };
+type PersistedEditState = { values: Record<string, number>; curves: Curves };
 const identityCurves: Curves = {
   rgb: [],
   red: [],
@@ -56,6 +58,8 @@ declare global {
       openImages: () => Promise<ImageFile[]>;
       openDroppedImages: (files: File[]) => Promise<ImageFile[]>;
       closeImage: (imageId: number) => Promise<boolean>;
+      loadEditState: (imageId: number) => Promise<PersistedEditState | null>;
+      saveEditState: (imageId: number, state: PersistedEditState) => Promise<boolean>;
       exportImage: (
         imageId: number,
         params: EditParams,
@@ -180,6 +184,40 @@ function updateSlider(sections: ToolSection[], sectionId: ToolSectionId, control
   } : section);
 }
 
+function serializeEditState(state: EditState): PersistedEditState {
+  return {
+    values: Object.fromEntries(state.sections.flatMap((section) =>
+      section.controls.map((control) => [control.id, control.value]))),
+    curves: state.curves,
+  };
+}
+
+function deserializeEditState(stored: PersistedEditState | null): EditState {
+  if (!stored || typeof stored !== 'object') return { sections: editSections, curves: identityCurves };
+  const values = stored.values && typeof stored.values === 'object' ? stored.values : {};
+  const sections = editSections.map((section) => ({
+    ...section,
+    controls: section.controls.map((control) => {
+      const value = values[control.id];
+      return {
+        ...control,
+        value: typeof value === 'number' && Number.isFinite(value)
+          ? Math.min(control.max, Math.max(control.min, value))
+          : control.value,
+      };
+    }),
+  }));
+  const curves = stored.curves && typeof stored.curves === 'object'
+    ? {
+        rgb: Array.isArray(stored.curves.rgb) ? stored.curves.rgb : [],
+        red: Array.isArray(stored.curves.red) ? stored.curves.red : [],
+        green: Array.isArray(stored.curves.green) ? stored.curves.green : [],
+        blue: Array.isArray(stored.curves.blue) ? stored.curves.blue : [],
+      }
+    : identityCurves;
+  return { sections, curves };
+}
+
 function App() {
   const [theme, setTheme] = useState<ThemeMode>('dark');
   const [images, setImages] = useState<ImageFile[]>([]);
@@ -213,10 +251,110 @@ function App() {
     reject: (reason: Error) => void;
   }>());
   const [sharedPreviewReady, setSharedPreviewReady] = useState(false);
+  const editStateRef = useRef<EditState>({ sections: editSections, curves: identityCurves });
+  const undoStack = useRef<EditState[]>([]);
+  const redoStack = useRef<EditState[]>([]);
+  const transactionStart = useRef<EditState | null>(null);
+  const editLoadRequest = useRef(0);
+  const [, setHistoryVersion] = useState(0);
 
   const selectedImage = images.find((image) => image.id === selectedImageId) ?? null;
   const editParams = useMemo(() => buildEditParams(sections, curves), [sections, curves]);
   const [renderParams, setRenderParams] = useState(editParams);
+  const cloneEditState = (state: EditState): EditState => ({
+    sections: state.sections.map((section) => ({
+      ...section,
+      controls: section.controls.map((control) => ({ ...control })),
+    })),
+    curves: {
+      rgb: state.curves.rgb.map((point) => ({ ...point })),
+      red: state.curves.red.map((point) => ({ ...point })),
+      green: state.curves.green.map((point) => ({ ...point })),
+      blue: state.curves.blue.map((point) => ({ ...point })),
+    },
+  });
+  const restoreEditState = (state: EditState) => {
+    const restored = cloneEditState(state);
+    editStateRef.current = restored;
+    setSections(restored.sections);
+    setCurves(restored.curves);
+    setRenderQuality('proxy');
+  };
+  const pushUndo = (state: EditState) => {
+    undoStack.current = [...undoStack.current.slice(-99), cloneEditState(state)];
+    redoStack.current = [];
+    setHistoryVersion((value) => value + 1);
+  };
+  const beginEdit = () => {
+    if (!transactionStart.current) transactionStart.current = cloneEditState(editStateRef.current);
+  };
+  const endEdit = () => {
+    const start = transactionStart.current;
+    transactionStart.current = null;
+    if (start && JSON.stringify(start) !== JSON.stringify(editStateRef.current)) pushUndo(start);
+  };
+  const undo = () => {
+    endEdit();
+    const previous = undoStack.current.pop();
+    if (!previous) return;
+    redoStack.current.push(cloneEditState(editStateRef.current));
+    restoreEditState(previous);
+    if (selectedImageId !== null) {
+      void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
+    }
+    setHistoryVersion((value) => value + 1);
+  };
+  const redo = () => {
+    endEdit();
+    const next = redoStack.current.pop();
+    if (!next) return;
+    undoStack.current.push(cloneEditState(editStateRef.current));
+    restoreEditState(next);
+    if (selectedImageId !== null) {
+      void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
+    }
+    setHistoryVersion((value) => value + 1);
+  };
+  const changeSliderValue = (sectionId: ToolSectionId, controlId: string, value: number) => {
+    const nextSections = updateSlider(editStateRef.current.sections, sectionId, controlId, value);
+    editStateRef.current = { ...editStateRef.current, sections: nextSections };
+    setSections(nextSections);
+    setRenderQuality('proxy');
+    if (selectedImageId !== null) {
+      void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
+    }
+  };
+  const changeCurve = (channel: CurveChannel, points: CurvePoint[]) => {
+    const nextCurves = { ...editStateRef.current.curves, [channel]: points };
+    editStateRef.current = { ...editStateRef.current, curves: nextCurves };
+    setCurves(nextCurves);
+    setRenderQuality('proxy');
+    if (selectedImageId !== null) {
+      void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
+    }
+  };
+
+  useEffect(() => {
+    const requestId = ++editLoadRequest.current;
+    undoStack.current = [];
+    redoStack.current = [];
+    transactionStart.current = null;
+    setHistoryVersion((value) => value + 1);
+    if (selectedImageId === null) {
+      restoreEditState({ sections: editSections, curves: identityCurves });
+      setRenderQuality('original');
+      return;
+    }
+    void window.rawElectron.loadEditState(selectedImageId).then((stored) => {
+      if (requestId !== editLoadRequest.current) return;
+      restoreEditState(deserializeEditState(stored));
+      setRenderQuality('original');
+    }).catch((error) => {
+      if (requestId !== editLoadRequest.current) return;
+      restoreEditState({ sections: editSections, curves: identityCurves });
+      setStatusMessage(`편집값 불러오기 실패: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }, [selectedImageId]);
 
   useEffect(() => {
     setZoom(1);
@@ -259,6 +397,12 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) redo();
+        else undo();
+        return;
+      }
       if (event.code === 'Space') {
         const target = event.target;
         if (!(target instanceof HTMLInputElement) &&
@@ -503,8 +647,10 @@ function App() {
   };
 
   const resetAll = () => {
-    setSections(editSections);
-    setCurves(identityCurves);
+    if (selectedImageId === null) return;
+    pushUndo(editStateRef.current);
+    restoreEditState({ sections: editSections, curves: identityCurves });
+    void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
     setRenderQuality('original');
     setStatusMessage('모든 조정을 초기화했습니다.');
   };
@@ -616,6 +762,26 @@ function App() {
           <span>{selectedImage ? selectedImage.name : '이미지 편집기'}</span>
         </div>
         <div className="header-actions">
+          <div className="history-actions" aria-label="편집 기록">
+            <button
+              className="icon-button"
+              title="실행 취소 (Ctrl+Z)"
+              aria-label="실행 취소"
+              disabled={selectedImageId === null || !undoStack.current.length}
+              onClick={undo}
+            >
+              ↶
+            </button>
+            <button
+              className="icon-button"
+              title="다시 실행 (Ctrl+Shift+Z)"
+              aria-label="다시 실행"
+              disabled={selectedImageId === null || !redoStack.current.length}
+              onClick={redo}
+            >
+              ↷
+            </button>
+          </div>
           <button className="button" disabled={isExporting} onClick={openImages}>파일 열기</button>
           <label className="format-select">
             <span>저장 형식</span>
@@ -736,21 +902,19 @@ function App() {
             <span>실시간 미리보기</span>
           </div>
           <div className="control-scroll">
-            <AdjustmentPanel
-              sections={sections}
-              curves={curves}
-              onSlider={(sectionId, controlId, value) => {
-                setRenderQuality('proxy');
-                setSections((current) => updateSlider(current, sectionId, controlId, value));
-              }}
-              onCurveChange={(channel, points) => {
-                setRenderQuality('proxy');
-                setCurves((current) => ({ ...current, [channel]: points }));
-              }}
-            />
+            <fieldset className="adjustment-fieldset" disabled={!selectedImage}>
+              <AdjustmentPanel
+                sections={sections}
+                curves={curves}
+                onEditStart={beginEdit}
+                onEditEnd={endEdit}
+                onSlider={changeSliderValue}
+                onCurveChange={changeCurve}
+              />
+            </fieldset>
           </div>
           <div className="control-footer">
-            <button className="button quiet" onClick={resetAll}>전체 초기화</button>
+            <button className="button quiet" disabled={!selectedImage} onClick={resetAll}>전체 초기화</button>
             <button className="button primary" disabled={!selectedImage} onClick={() => setRenderQuality('original')}>
               고품질 적용
             </button>
@@ -811,24 +975,48 @@ function AdjustmentPanel({
   curves,
   onSlider,
   onCurveChange,
+  onEditStart,
+  onEditEnd,
 }: {
   sections: ToolSection[];
   curves: Curves;
   onSlider: (sectionId: ToolSectionId, controlId: string, value: number) => void;
   onCurveChange: (channel: CurveChannel, points: CurvePoint[]) => void;
+  onEditStart: () => void;
+  onEditEnd: () => void;
 }) {
+  const [curveExpanded, setCurveExpanded] = useState(false);
   return (
     <>
       {sections.map((section) => (
         <section className="control-section" key={section.id}>
           <h2>{section.title}</h2>
           {section.id === 'light' && (
-            <CurveEditor curves={curves} onChange={onCurveChange} />
+            <div className="curve-section">
+              <button
+                className="curve-section-toggle"
+                aria-expanded={curveExpanded}
+                onClick={() => setCurveExpanded((current) => !current)}
+              >
+                <span>RGB 커브</span>
+                <span aria-hidden="true">{curveExpanded ? '▾' : '▸'}</span>
+              </button>
+              {curveExpanded && (
+                <CurveEditor
+                  curves={curves}
+                  onChange={onCurveChange}
+                  onEditStart={onEditStart}
+                  onEditEnd={onEditEnd}
+                />
+              )}
+            </div>
           )}
           {section.controls.map((control) => (
             <SliderControl
               key={control.id}
               control={control}
+              onEditStart={onEditStart}
+              onEditEnd={onEditEnd}
               onChange={(value) => onSlider(section.id, control.id, value)}
             />
           ))}
@@ -841,9 +1029,13 @@ function AdjustmentPanel({
 function CurveEditor({
   curves,
   onChange,
+  onEditStart,
+  onEditEnd,
 }: {
   curves: Curves;
   onChange: (channel: CurveChannel, points: CurvePoint[]) => void;
+  onEditStart: () => void;
+  onEditEnd: () => void;
 }) {
   const [channel, setChannel] = useState<CurveChannel>('rgb');
   const svgRef = useRef<SVGSVGElement>(null);
@@ -920,7 +1112,11 @@ function CurveEditor({
             {item === 'rgb' ? 'RGB' : item === 'red' ? 'R' : item === 'green' ? 'G' : 'B'}
           </button>
         ))}
-        <button className="curve-reset" onClick={() => onChange(channel, [])}>초기화</button>
+        <button className="curve-reset" onClick={() => {
+          onEditStart();
+          onChange(channel, []);
+          onEditEnd();
+        }}>초기화</button>
       </div>
       <svg
         ref={svgRef}
@@ -931,7 +1127,9 @@ function CurveEditor({
           if (points.length >= 8) return;
           const position = pointerPosition(event.clientX, event.clientY);
           if (!position) return;
+          onEditStart();
           onChange(channel, [...points, position].sort((left, right) => left.x - right.x));
+          onEditEnd();
         }}
         onPointerMove={(event) => {
           if (dragPoint !== null) updatePoint(dragPoint, event.clientX, event.clientY);
@@ -939,8 +1137,12 @@ function CurveEditor({
         onPointerUp={(event) => {
           if (svgRef.current?.hasPointerCapture(event.pointerId)) svgRef.current.releasePointerCapture(event.pointerId);
           setDragPoint(null);
+          onEditEnd();
         }}
-        onPointerCancel={() => setDragPoint(null)}
+        onPointerCancel={() => {
+          setDragPoint(null);
+          onEditEnd();
+        }}
       >
         <path className="curve-grid" d="M 25 0 V 100 M 50 0 V 100 M 75 0 V 100 M 0 25 H 100 M 0 50 H 100 M 0 75 H 100" />
         <path className="curve-diagonal" d="M 0 100 L 100 0" />
@@ -954,13 +1156,16 @@ function CurveEditor({
             style={{ stroke: colors[channel] }}
             onPointerDown={(event) => {
               event.preventDefault();
+              onEditStart();
               svgRef.current?.setPointerCapture(event.pointerId);
               setDragPoint(index);
               updatePoint(index, event.clientX, event.clientY);
             }}
             onContextMenu={(event) => {
               event.preventDefault();
+              onEditStart();
               onChange(channel, points.filter((_, pointIndex) => pointIndex !== index));
+              onEditEnd();
             }}
             onDoubleClick={(event) => event.stopPropagation()}
           />
@@ -975,19 +1180,67 @@ function CurveEditor({
   );
 }
 
-function SliderControl({ control, onChange }: { control: SliderOption; onChange: (value: number) => void }) {
+function SliderControl({
+  control,
+  onChange,
+  onEditStart,
+  onEditEnd,
+}: {
+  control: SliderOption;
+  onChange: (value: number) => void;
+  onEditStart: () => void;
+  onEditEnd: () => void;
+}) {
+  const [draft, setDraft] = useState(String(control.value));
+  useEffect(() => setDraft(String(control.value)), [control.value]);
   const displayValue = control.step && control.step < 1
     ? control.value.toFixed(1).replace('.0', '')
     : Math.round(control.value).toString();
+  const commitDraft = () => {
+    const parsed = Number(draft);
+    const value = Number.isFinite(parsed)
+      ? Math.min(control.max, Math.max(control.min, parsed))
+      : control.value;
+    onChange(value);
+    setDraft(String(value));
+    onEditEnd();
+  };
   return (
     <label className="slider-control">
-      <span><span>{control.label}</span><output>{displayValue}</output></span>
+      <span>
+        <span>{control.label}</span>
+        <input
+          className="slider-value-input"
+          type="number"
+          min={control.min}
+          max={control.max}
+          step={control.step ?? 1}
+          value={draft}
+          aria-label={`${control.label} 값`}
+          onFocus={onEditStart}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+          onBlur={commitDraft}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur();
+            if (event.key === 'Escape') {
+              setDraft(displayValue);
+              event.currentTarget.blur();
+            }
+          }}
+        />
+      </span>
       <input
         type="range"
+        tabIndex={-1}
         min={control.min}
         max={control.max}
         step={control.step ?? 1}
         value={control.value}
+        onPointerDown={onEditStart}
+        onPointerUp={onEditEnd}
+        onPointerCancel={onEditEnd}
+        onKeyDown={onEditStart}
+        onKeyUp={onEditEnd}
         onChange={(event) => onChange(Number(event.currentTarget.value))}
       />
     </label>

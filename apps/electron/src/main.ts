@@ -42,7 +42,9 @@ if (started) {
 
 const engineWorker = new EngineWorker();
 const previewRoot = path.join(app.getPath('temp'), 'RawElectron', 'preview');
+const editStatePath = path.join(app.getPath('userData'), 'edit-states.json');
 const debugLogs: DebugLogEntry[] = [];
+const imagePaths = new Map<number, string>();
 const initialPreviewLogged = new Set<number>();
 let nextDebugLogId = 1;
 
@@ -81,6 +83,26 @@ type ImageFile = {
   pixelFormat: 'rgba8';
 };
 
+type StoredEditStates = Record<string, unknown>;
+
+function readEditStates(): StoredEditStates {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(editStatePath, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as StoredEditStates : {};
+  } catch {
+    return {};
+  }
+}
+
+function editStateKey(filePath: string) {
+  return path.resolve(filePath).toLocaleLowerCase('en-US');
+}
+
+function writeEditStates(states: StoredEditStates) {
+  fs.mkdirSync(path.dirname(editStatePath), { recursive: true });
+  fs.writeFileSync(editStatePath, JSON.stringify(states, null, 2), 'utf8');
+}
+
 const imageOpenFilters = [
   {
     name: 'Images',
@@ -118,6 +140,7 @@ function outputPathForFormat(filePath: string, format: ExportFormat) {
 
 async function toImageFile(filePath: string): Promise<ImageFile> {
   const opened = await engineWorker.openImage(filePath);
+  imagePaths.set(opened.id, path.resolve(filePath));
 
   return {
     id: opened.id,
@@ -167,7 +190,25 @@ ipcMain.handle('images:open-paths', async (_event, filePaths: unknown): Promise<
 ipcMain.handle('images:close', async (_event, imageId: number) => {
   if (!Number.isSafeInteger(imageId) || imageId <= 0) throw new Error('Invalid image id');
   await engineWorker.closeImage(imageId);
+  imagePaths.delete(imageId);
   debugLog('debug', '파일', `이미지 #${imageId}를 목록에서 닫았습니다.`);
+  return true;
+});
+
+ipcMain.handle('edit-state:load', (_event, imageId: number) => {
+  const filePath = imagePaths.get(imageId);
+  if (!filePath) return null;
+  return readEditStates()[editStateKey(filePath)] ?? null;
+});
+
+ipcMain.handle('edit-state:save', (_event, imageId: number, state: unknown) => {
+  const filePath = imagePaths.get(imageId);
+  if (!filePath) throw new Error('Image is not open');
+  const serialized = JSON.stringify(state);
+  if (serialized.length > 100_000) throw new Error('Edit state is too large');
+  const states = readEditStates();
+  states[editStateKey(filePath)] = JSON.parse(serialized);
+  writeEditStates(states);
   return true;
 });
 
