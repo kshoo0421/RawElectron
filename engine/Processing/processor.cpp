@@ -27,6 +27,21 @@ double luminance(double red, double green, double blue) {
   return red * 0.2126 + green * 0.7152 + blue * 0.0722;
 }
 
+bool is_identity_curve(const std::array<double, 5>& curve) {
+  static constexpr std::array<double, 5> identity = {0.0, 0.25, 0.5, 0.75, 1.0};
+  return curve == identity;
+}
+
+double apply_curve(const std::array<double, 5>& curve, double value) {
+  const double scaled = std::clamp(value, 0.0, 1.0) * 4.0;
+  const std::size_t left = std::min<std::size_t>(3, static_cast<std::size_t>(scaled));
+  const double fraction = scaled - static_cast<double>(left);
+  return std::clamp(
+      curve[left] + (curve[left + 1] - curve[left]) * fraction,
+      0.0,
+      1.0);
+}
+
 bool is_identity(const image_core::Adjustment& value) {
   return value.exposure == 0.0 && value.contrast == 0.0 && value.highlights == 0.0 &&
       value.shadows == 0.0 && value.whites == 0.0 && value.blacks == 0.0 &&
@@ -35,7 +50,9 @@ bool is_identity(const image_core::Adjustment& value) {
       value.dehaze == 0.0 && value.vignette == 0.0 && value.grain == 0.0 &&
       value.sharpening == 0.0 && value.luminance_noise == 0.0 && value.color_noise == 0.0 &&
       value.moire == 0.0 && value.defringe == 0.0 &&
-      !value.remove_chromatic_aberration && !value.lens_correction;
+      !value.remove_chromatic_aberration && !value.lens_correction &&
+      is_identity_curve(value.curve_rgb) && is_identity_curve(value.curve_red) &&
+      is_identity_curve(value.curve_green) && is_identity_curve(value.curve_blue);
 }
 
 void apply_spatial_detail(
@@ -171,6 +188,10 @@ image_core::Status BasicProcessor::process(
       green += noise;
       blue += noise;
     }
+
+    red = apply_curve(adjustment.curve_red, apply_curve(adjustment.curve_rgb, red));
+    green = apply_curve(adjustment.curve_green, apply_curve(adjustment.curve_rgb, green));
+    blue = apply_curve(adjustment.curve_blue, apply_curve(adjustment.curve_rgb, blue));
 
     output.pixels[offset] = static_cast<std::uint8_t>(std::clamp(red, 0.0, 1.0) * 255.0 + 0.5);
     output.pixels[offset + 1] = static_cast<std::uint8_t>(std::clamp(green, 0.0, 1.0) * 255.0 + 0.5);

@@ -21,6 +21,16 @@ type ToolSection = {
   controls: SliderOption[];
 };
 
+type CurveChannel = 'rgb' | 'red' | 'green' | 'blue';
+type Curves = Record<CurveChannel, number[]>;
+const identityCurve = [0, 0.25, 0.5, 0.75, 1];
+const identityCurves: Curves = {
+  rgb: [...identityCurve],
+  red: [...identityCurve],
+  green: [...identityCurve],
+  blue: [...identityCurve],
+};
+
 type ImageFile = {
   id: number;
   name: string;
@@ -125,7 +135,7 @@ function sliderValue(sections: ToolSection[], id: string, fallback = 0) {
   return fallback;
 }
 
-function buildEditParams(sections: ToolSection[]): EditParams {
+function buildEditParams(sections: ToolSection[], curves: Curves): EditParams {
   return {
     exposure: sliderValue(sections, 'exposure'),
     contrast: sliderValue(sections, 'contrast'),
@@ -149,6 +159,7 @@ function buildEditParams(sections: ToolSection[]): EditParams {
     lensCorrection: false,
     moire: sliderValue(sections, 'moire'),
     defringe: sliderValue(sections, 'defringe'),
+    curves,
     crop: { enabled: false, ratio: '원본', rotation: 0 },
     remove: { brushSize: 0, detectObjects: false, generativeAi: false },
     mask: {
@@ -178,6 +189,7 @@ function App() {
   const [statusMessage, setStatusMessage] = useState('이미지를 열어 편집을 시작하세요.');
   const [viewportPixels, setViewportPixels] = useState({ width: 1280, height: 960 });
   const [sections, setSections] = useState<ToolSection[]>(editSections);
+  const [curves, setCurves] = useState<Curves>(identityCurves);
   const [renderQuality, setRenderQuality] = useState<'proxy' | 'original'>('original');
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
@@ -186,7 +198,13 @@ function App() {
   const [exportResult, setExportResult] = useState<{ path: string } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ imageId: number; x: number; y: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [isSpacePressed, setIsSpacePressed] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const previewImageRef = useRef<HTMLImageElement>(null);
+  const panStart = useRef({ pointerX: 0, pointerY: 0, panX: 0, panY: 0 });
   const engineRequestId = useRef(0);
   const generatedPreviewUrl = useRef<string | null>(null);
   const sharedPreviewPort = useRef<MessagePort | null>(null);
@@ -197,8 +215,13 @@ function App() {
   const [sharedPreviewReady, setSharedPreviewReady] = useState(false);
 
   const selectedImage = images.find((image) => image.id === selectedImageId) ?? null;
-  const editParams = useMemo(() => buildEditParams(sections), [sections]);
+  const editParams = useMemo(() => buildEditParams(sections, curves), [sections, curves]);
   const [renderParams, setRenderParams] = useState(editParams);
+
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [selectedImageId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setRenderParams(editParams), renderQuality === 'proxy' ? 60 : 0);
@@ -236,17 +259,41 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code === 'Space') {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) &&
+            !(target instanceof HTMLSelectElement) &&
+            !(target instanceof HTMLButtonElement)) {
+          event.preventDefault();
+          setIsSpacePressed(true);
+        }
+        return;
+      }
       if (event.key !== 'Delete' || selectedImageId === null || isExporting) return;
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return;
       event.preventDefault();
       void removeImage(selectedImageId);
     };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === 'Space') {
+        setIsSpacePressed(false);
+        setIsPanning(false);
+      }
+    };
+    const handleBlur = () => {
+      setIsSpacePressed(false);
+      setIsPanning(false);
+    };
     const closeMenu = () => setContextMenu(null);
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
     window.addEventListener('click', closeMenu);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
       window.removeEventListener('click', closeMenu);
     };
   });
@@ -457,8 +504,85 @@ function App() {
 
   const resetAll = () => {
     setSections(editSections);
+    setCurves(identityCurves);
     setRenderQuality('original');
     setStatusMessage('모든 조정을 초기화했습니다.');
+  };
+
+  const changeZoom = (nextZoom: number) => {
+    const clamped = Math.min(8, Math.max(0.1, nextZoom));
+    setZoom(clamped);
+    if (clamped <= 1) setPan({ x: 0, y: 0 });
+  };
+
+  const constrainedPan = (nextPan: { x: number; y: number }) => {
+    const canvas = canvasRef.current;
+    const image = previewImageRef.current;
+    if (!canvas || !image) return nextPan;
+
+    const canvasRect = canvas.getBoundingClientRect();
+    const imageRect = image.getBoundingClientRect();
+    const deltaX = nextPan.x - pan.x;
+    const deltaY = nextPan.y - pan.y;
+    const minimumVisible = Math.min(72, canvasRect.width * 0.18, canvasRect.height * 0.18);
+    let x = nextPan.x;
+    let y = nextPan.y;
+
+    const nextLeft = imageRect.left + deltaX;
+    const nextRight = imageRect.right + deltaX;
+    const nextTop = imageRect.top + deltaY;
+    const nextBottom = imageRect.bottom + deltaY;
+
+    if (nextRight < canvasRect.left + minimumVisible) {
+      x += canvasRect.left + minimumVisible - nextRight;
+    }
+    if (nextLeft > canvasRect.right - minimumVisible) {
+      x -= nextLeft - (canvasRect.right - minimumVisible);
+    }
+    if (nextBottom < canvasRect.top + minimumVisible) {
+      y += canvasRect.top + minimumVisible - nextBottom;
+    }
+    if (nextTop > canvasRect.bottom - minimumVisible) {
+      y -= nextTop - (canvasRect.bottom - minimumVisible);
+    }
+
+    return { x, y };
+  };
+
+  const handleViewerWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!selectedImage) return;
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+    changeZoom(zoom * factor);
+  };
+
+  const startPanning = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!selectedImage || !isSpacePressed || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panStart.current = {
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      panX: pan.x,
+      panY: pan.y,
+    };
+    setIsPanning(true);
+  };
+
+  const movePanning = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isPanning) return;
+    setPan(constrainedPan({
+      x: panStart.current.panX + event.clientX - panStart.current.pointerX,
+      y: panStart.current.panY + event.clientY - panStart.current.pointerY,
+    }));
+  };
+
+  const stopPanning = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isPanning) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setIsPanning(false);
   };
 
   return (
@@ -552,23 +676,36 @@ function App() {
         </aside>
 
         <section className="viewer">
-          <div className="canvas" ref={canvasRef}>
+          <div
+            className={`canvas ${isSpacePressed ? 'pan-ready' : ''} ${isPanning ? 'panning' : ''}`}
+            ref={canvasRef}
+            onWheel={handleViewerWheel}
+            onPointerDown={startPanning}
+            onPointerMove={movePanning}
+            onPointerUp={stopPanning}
+            onPointerCancel={stopPanning}
+            onDoubleClick={() => changeZoom(zoom === 1 ? 2 : 1)}
+          >
             {selectedImage ? (
               previewUrl
-                ? <img
-                    src={previewUrl}
-                    alt={selectedImage.name}
-                    draggable
-                    title="화면 밖으로 드래그해 현재 저장 형식으로 내보내기"
-                    onDragStart={(event) => void dragOutput(selectedImage.id, event)}
-                    onLoad={() => {
-                    if (previewQuality) sharedPreviewPort.current?.postMessage({
-                      type: 'shared-preview-displayed',
-                      imageId: selectedImage.id,
-                      quality: previewQuality,
-                    });
-                    }}
-                  />
+                ? <div
+                    className="image-transform"
+                    style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` }}
+                  >
+                    <img
+                      ref={previewImageRef}
+                      src={previewUrl}
+                      alt={selectedImage.name}
+                      draggable={false}
+                      onLoad={() => {
+                        if (previewQuality) sharedPreviewPort.current?.postMessage({
+                          type: 'shared-preview-displayed',
+                          imageId: selectedImage.id,
+                          quality: previewQuality,
+                        });
+                      }}
+                    />
+                  </div>
                 : <div className="loading">미리보기를 만드는 중입니다…</div>
             ) : (
               <div className="empty-state">
@@ -581,6 +718,12 @@ function App() {
           <footer className="statusbar">
             <span>{statusMessage}</span>
             {selectedImage && <span>{selectedImage.width} × {selectedImage.height}px</span>}
+            <div className="zoom-controls" aria-label="확대 축소">
+              <button disabled={!selectedImage} onClick={() => changeZoom(zoom / 1.25)}>−</button>
+              <button disabled={!selectedImage} onClick={() => changeZoom(1)}>화면 맞춤</button>
+              <button disabled={!selectedImage} onClick={() => changeZoom(zoom * 1.25)}>+</button>
+              <output>{Math.round(zoom * 100)}%</output>
+            </div>
             <button onClick={() => setShowLogs((current) => !current)}>
               {showLogs ? '로그 닫기' : `로그 ${debugLogs.length}`}
             </button>
@@ -595,9 +738,14 @@ function App() {
           <div className="control-scroll">
             <AdjustmentPanel
               sections={sections}
+              curves={curves}
               onSlider={(sectionId, controlId, value) => {
                 setRenderQuality('proxy');
                 setSections((current) => updateSlider(current, sectionId, controlId, value));
+              }}
+              onCurveChange={(channel, points) => {
+                setRenderQuality('proxy');
+                setCurves((current) => ({ ...current, [channel]: points }));
               }}
             />
           </div>
@@ -660,16 +808,23 @@ function portCleanup(port: MessagePort | null) {
 
 function AdjustmentPanel({
   sections,
+  curves,
   onSlider,
+  onCurveChange,
 }: {
   sections: ToolSection[];
+  curves: Curves;
   onSlider: (sectionId: ToolSectionId, controlId: string, value: number) => void;
+  onCurveChange: (channel: CurveChannel, points: number[]) => void;
 }) {
   return (
     <>
       {sections.map((section) => (
         <section className="control-section" key={section.id}>
           <h2>{section.title}</h2>
+          {section.id === 'light' && (
+            <CurveEditor curves={curves} onChange={onCurveChange} />
+          )}
           {section.controls.map((control) => (
             <SliderControl
               key={control.id}
@@ -680,6 +835,89 @@ function AdjustmentPanel({
         </section>
       ))}
     </>
+  );
+}
+
+function CurveEditor({
+  curves,
+  onChange,
+}: {
+  curves: Curves;
+  onChange: (channel: CurveChannel, points: number[]) => void;
+}) {
+  const [channel, setChannel] = useState<CurveChannel>('rgb');
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [dragPoint, setDragPoint] = useState<number | null>(null);
+  const points = curves[channel];
+  const colors: Record<CurveChannel, string> = {
+    rgb: '#dfe4eb',
+    red: '#ff6868',
+    green: '#54d17a',
+    blue: '#6598ff',
+  };
+  const path = points.map((value, index) =>
+    `${index === 0 ? 'M' : 'L'} ${index * 25} ${(1 - value) * 100}`).join(' ');
+
+  const updatePoint = (index: number, clientY: number) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const value = Math.min(1, Math.max(0, 1 - (clientY - rect.top) / rect.height));
+    const next = [...points];
+    next[index] = value;
+    onChange(channel, next);
+  };
+
+  return (
+    <div className="curve-editor">
+      <div className="curve-tabs">
+        {(['rgb', 'red', 'green', 'blue'] as CurveChannel[]).map((item) => (
+          <button
+            key={item}
+            className={channel === item ? 'active' : ''}
+            style={{ '--curve-color': colors[item] } as React.CSSProperties}
+            onClick={() => setChannel(item)}
+          >
+            {item === 'rgb' ? 'RGB' : item === 'red' ? 'R' : item === 'green' ? 'G' : 'B'}
+          </button>
+        ))}
+        <button className="curve-reset" onClick={() => onChange(channel, [...identityCurve])}>초기화</button>
+      </div>
+      <svg
+        ref={svgRef}
+        className="curve-graph"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        onPointerMove={(event) => {
+          if (dragPoint !== null) updatePoint(dragPoint, event.clientY);
+        }}
+        onPointerUp={(event) => {
+          if (svgRef.current?.hasPointerCapture(event.pointerId)) svgRef.current.releasePointerCapture(event.pointerId);
+          setDragPoint(null);
+        }}
+        onPointerCancel={() => setDragPoint(null)}
+      >
+        <path className="curve-grid" d="M 25 0 V 100 M 50 0 V 100 M 75 0 V 100 M 0 25 H 100 M 0 50 H 100 M 0 75 H 100" />
+        <path className="curve-diagonal" d="M 0 100 L 100 0" />
+        <path className="curve-line" d={path} style={{ stroke: colors[channel] }} />
+        {points.map((value, index) => (
+          <circle
+            key={index}
+            cx={index * 25}
+            cy={(1 - value) * 100}
+            r="3.2"
+            style={{ stroke: colors[channel] }}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              svgRef.current?.setPointerCapture(event.pointerId);
+              setDragPoint(index);
+              updatePoint(index, event.clientY);
+            }}
+          />
+        ))}
+      </svg>
+      <div className="curve-labels"><span>그림자</span><span>중간톤</span><span>하이라이트</span></div>
+    </div>
   );
 }
 

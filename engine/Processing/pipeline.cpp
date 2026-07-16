@@ -60,6 +60,10 @@ image_core::Adjustment select_color(const image_core::Adjustment& source) {
   result.moire = source.moire;
   result.defringe = source.defringe;
   result.remove_chromatic_aberration = source.remove_chromatic_aberration;
+  result.curve_rgb = source.curve_rgb;
+  result.curve_red = source.curve_red;
+  result.curve_green = source.curve_green;
+  result.curve_blue = source.curve_blue;
   return result;
 }
 

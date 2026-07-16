@@ -54,6 +54,12 @@ export type EditParams = {
   lensCorrection: boolean;
   moire: number;
   defringe: number;
+  curves: {
+    rgb: number[];
+    red: number[];
+    green: number[];
+    blue: number[];
+  };
   crop: CropParams;
   remove: RemoveParams;
   mask: MaskParams;

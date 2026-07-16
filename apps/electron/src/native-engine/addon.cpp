@@ -81,6 +81,26 @@ bool GetBoolProperty(napi_env env, napi_value object, const char* name, bool fal
   return result;
 }
 
+std::array<double, 5> GetCurveProperty(napi_env env, napi_value object, const char* name) {
+  std::array<double, 5> result = {0.0, 0.25, 0.5, 0.75, 1.0};
+  if (!HasProperty(env, object, name)) return result;
+  napi_value value = GetProperty(env, object, name);
+  bool is_array = false;
+  Check(env, napi_is_array(env, value, &is_array), "Failed to inspect curve array");
+  if (!is_array) return result;
+  std::uint32_t length = 0;
+  Check(env, napi_get_array_length(env, value, &length), "Failed to read curve length");
+  if (length != result.size()) return result;
+  for (std::uint32_t index = 0; index < length; ++index) {
+    napi_value item;
+    Check(env, napi_get_element(env, value, index, &item), "Failed to read curve point");
+    double point = result[index];
+    Check(env, napi_get_value_double(env, item, &point), "Curve points must be numbers");
+    result[index] = std::clamp(point, 0.0, 1.0);
+  }
+  return result;
+}
+
 rawelectron::image_core::ImageId GetImageIdProperty(napi_env env, napi_value object) {
   int64_t value = 0;
   Check(env, napi_get_value_int64(env, GetProperty(env, object, "imageId"), &value), "Failed to read imageId");
@@ -162,6 +182,13 @@ rawelectron::image_core::Adjustment ReadEditParams(napi_env env, napi_value requ
   params.defringe = GetDoubleProperty(env, value, "defringe");
   params.remove_chromatic_aberration = GetBoolProperty(env, value, "removeCa");
   params.lens_correction = GetBoolProperty(env, value, "lensCorrection");
+  if (HasProperty(env, value, "curves")) {
+    napi_value curves = GetProperty(env, value, "curves");
+    params.curve_rgb = GetCurveProperty(env, curves, "rgb");
+    params.curve_red = GetCurveProperty(env, curves, "red");
+    params.curve_green = GetCurveProperty(env, curves, "green");
+    params.curve_blue = GetCurveProperty(env, curves, "blue");
+  }
 
   return params;
 }

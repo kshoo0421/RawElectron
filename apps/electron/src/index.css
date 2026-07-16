@@ -153,10 +153,18 @@ button { color: inherit; }
 .image-item span:last-child { font-size: 11px; }
 
 .viewer { display: grid; grid-template-rows: minmax(0, 1fr) 34px; min-width: 0; min-height: 0; background: #0a0b0d; }
-.canvas { display: grid; place-items: center; min-width: 0; min-height: 0; padding: 28px; overflow: hidden; }
-.canvas img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 14px 44px rgba(0,0,0,.35); }
-.canvas img[draggable="true"] { cursor: grab; }
-.canvas img[draggable="true"]:active { cursor: grabbing; }
+.canvas { display: grid; place-items: center; min-width: 0; min-height: 0; padding: 28px; overflow: hidden; touch-action: none; user-select: none; }
+.canvas.pan-ready { cursor: grab; }
+.canvas.panning { cursor: grabbing; }
+.image-transform {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  transform-origin: center;
+  will-change: transform;
+}
+.canvas img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none; box-shadow: 0 14px 44px rgba(0,0,0,.35); }
 .loading { color: #a8afb8; }
 .empty-state { max-width: 430px; color: #e8ebef; text-align: center; }
 .empty-state h1 { margin: 0 0 10px; font-size: 25px; }
@@ -172,6 +180,19 @@ button { color: inherit; }
   font-size: 11px;
 }
 .statusbar span:first-child { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zoom-controls { display: flex; align-items: center; gap: 3px; }
+.zoom-controls button {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #303640;
+  border-radius: 4px;
+  color: #b1b8c2;
+  background: #20242a;
+  cursor: pointer;
+}
+.zoom-controls button:disabled { opacity: .35; cursor: default; }
+.zoom-controls output { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
 
 .control-scroll { min-height: 0; overflow-y: auto; }
 .control-section { padding: 16px; border-bottom: 1px solid var(--border); }
@@ -180,6 +201,36 @@ button { color: inherit; }
 .slider-control > span { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
 .slider-control output { color: var(--text); font-variant-numeric: tabular-nums; }
 .slider-control input { width: 100%; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.curve-editor { margin: 0 0 18px; }
+.curve-tabs { display: flex; gap: 5px; margin-bottom: 8px; }
+.curve-tabs button {
+  min-width: 28px;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  background: var(--surface-3);
+  cursor: pointer;
+}
+.curve-tabs button.active { border-color: var(--curve-color); color: var(--curve-color); }
+.curve-tabs .curve-reset { min-width: 0; margin-left: auto; background: transparent; }
+.curve-graph {
+  display: block;
+  width: 100%;
+  height: 170px;
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: linear-gradient(135deg, #111419, #1c2026);
+  touch-action: none;
+}
+.curve-grid, .curve-diagonal, .curve-line { fill: none; vector-effect: non-scaling-stroke; }
+.curve-grid { stroke: #343a43; stroke-width: 1; }
+.curve-diagonal { stroke: #505762; stroke-width: 1; stroke-dasharray: 3 3; }
+.curve-line { stroke-width: 2; }
+.curve-graph circle { fill: #181c21; stroke-width: 2; vector-effect: non-scaling-stroke; cursor: ns-resize; }
+.curve-labels { display: flex; justify-content: space-between; margin-top: 5px; color: var(--muted); font-size: 10px; }
 
 .control-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
 
