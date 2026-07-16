@@ -179,9 +179,9 @@ button { color: inherit; }
 .image-name { overflow: hidden; color: var(--text); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .image-item span:last-child { font-size: 11px; }
 
-.viewer { display: grid; grid-template-rows: minmax(0, 1fr) 142px 34px; min-width: 0; min-height: 0; background: #0a0b0d; }
+.viewer { display: grid; grid-template-rows: minmax(0, 1fr) 142px 34px; min-width: 0; min-height: 0; background: #000; }
 .viewer.histogram-hidden { grid-template-rows: minmax(0, 1fr) 34px; }
-.canvas { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; padding: 28px; overflow: hidden; touch-action: none; user-select: none; }
+.canvas { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; padding: 28px; overflow: hidden; background: #000; touch-action: none; user-select: none; }
 .canvas.pan-ready { cursor: grab; }
 .canvas.panning { cursor: grabbing; }
 .image-transform {
@@ -222,6 +222,11 @@ button { color: inherit; }
   pointer-events: auto;
   cursor: move;
   touch-action: none;
+  outline: none;
+}
+.crop-frame:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent), 0 0 0 9999px rgba(0,0,0,.22);
 }
 .crop-frame::before,
 .crop-frame::after {

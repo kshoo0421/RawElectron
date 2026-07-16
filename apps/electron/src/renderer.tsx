@@ -275,6 +275,40 @@ function maximumFixedRatioCrop(imageAspect: number, degrees: number, targetAspec
   return { x: (1 - width) / 2, y: (1 - height) / 2, width, height };
 }
 
+function constrainCropPosition(
+  imageAspect: number,
+  degrees: number,
+  crop: Pick<CropState, 'x' | 'y' | 'width' | 'height'>,
+) {
+  const radians = degrees * Math.PI / 180;
+  const sin = Math.sin(radians);
+  const cos = Math.cos(radians);
+  const boundingWidth = imageAspect * Math.abs(cos) + Math.abs(sin);
+  const boundingHeight = imageAspect * Math.abs(sin) + Math.abs(cos);
+  const halfWidth = crop.width * boundingWidth / 2;
+  const halfHeight = crop.height * boundingHeight / 2;
+  const extentX = Math.abs(cos) * halfWidth + Math.abs(sin) * halfHeight;
+  const extentY = Math.abs(sin) * halfWidth + Math.abs(cos) * halfHeight;
+  const centerX = (crop.x + crop.width / 2 - 0.5) * boundingWidth;
+  const centerY = (crop.y + crop.height / 2 - 0.5) * boundingHeight;
+  const sourceX = centerX * cos - centerY * sin;
+  const sourceY = centerX * sin + centerY * cos;
+  const constrainedSourceX = Math.min(
+    Math.max(0, imageAspect / 2 - extentX),
+    Math.max(-Math.max(0, imageAspect / 2 - extentX), sourceX),
+  );
+  const constrainedSourceY = Math.min(
+    Math.max(0, 0.5 - extentY),
+    Math.max(-Math.max(0, 0.5 - extentY), sourceY),
+  );
+  const constrainedCenterX = constrainedSourceX * cos + constrainedSourceY * sin;
+  const constrainedCenterY = -constrainedSourceX * sin + constrainedSourceY * cos;
+  return {
+    x: constrainedCenterX / boundingWidth + 0.5 - crop.width / 2,
+    y: constrainedCenterY / boundingHeight + 0.5 - crop.height / 2,
+  };
+}
+
 function serializeEditState(state: EditState): PersistedEditState {
   return {
     values: Object.fromEntries(state.sections.flatMap((section) =>
@@ -505,6 +539,7 @@ function App() {
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
+    if (selectedImageId === null) setControlTab('adjustments');
   }, [selectedImageId]);
 
   useEffect(() => {
@@ -1012,7 +1047,7 @@ function App() {
           </div>
         </aside>
 
-        <section className={`viewer ${showHistograms ? '' : 'histogram-hidden'}`}>
+        <section className={`viewer ${showHistograms && controlTab !== 'crop' ? '' : 'histogram-hidden'}`}>
           <div
             className={`canvas ${isSpacePressed ? 'pan-ready' : ''} ${isPanning ? 'panning' : ''}`}
             ref={canvasRef}
@@ -1103,7 +1138,7 @@ function App() {
               </div>
             )}
           </div>
-          {showHistograms && <HistogramPanel histograms={histograms} />}
+          {showHistograms && controlTab !== 'crop' && <HistogramPanel histograms={histograms} />}
           <footer className="statusbar">
             <span>{statusMessage}</span>
             {selectedImage && <span>{selectedImage.width} × {selectedImage.height}px</span>}
@@ -1113,8 +1148,13 @@ function App() {
               <button disabled={!selectedImage} onClick={() => changeZoom(zoom * 1.25)}>+</button>
               <output>{Math.round(zoom * 100)}%</output>
             </div>
-            <button onClick={() => setShowHistograms((current) => !current)}>
-              {showHistograms ? '히스토그램 숨기기' : '히스토그램 보기'}
+            <button
+              disabled={controlTab === 'crop'}
+              onClick={() => setShowHistograms((current) => !current)}
+            >
+              {controlTab === 'crop'
+                ? '히스토그램 비활성'
+                : showHistograms ? '히스토그램 숨기기' : '히스토그램 보기'}
             </button>
             <button onClick={() => setShowLogs((current) => !current)}>
               {showLogs ? '로그 닫기' : `로그 ${debugLogs.length}`}
@@ -1132,6 +1172,7 @@ function App() {
             </button>
             <button
               className={controlTab === 'crop' ? 'active' : ''}
+              disabled={!selectedImage}
               onClick={() => setControlTab('crop')}
             >
               자르기·회전
@@ -1254,8 +1295,13 @@ function CropFrame({
     const safeBottom = safe.y + safe.height;
     const minimum = 0.08;
     if (active.mode === 'move') {
-      x = Math.min(safeRight - width, Math.max(safe.x, x + dx));
-      y = Math.min(safeBottom - height, Math.max(safe.y, y + dy));
+      const desiredX = Math.min(1 - width, Math.max(0, x + dx));
+      const desiredY = Math.min(1 - height, Math.max(0, y + dy));
+      const constrained = constrainCropPosition(imageAspect, crop.rotation, {
+        x: desiredX, y: desiredY, width, height,
+      });
+      x = constrained.x;
+      y = constrained.y;
     } else {
       if (active.mode.includes('left')) {
         const right = x + width;
@@ -1270,7 +1316,15 @@ function CropFrame({
       }
       if (active.mode.includes('bottom')) height = Math.min(safeBottom - y, Math.max(minimum, height + dy));
     }
-    onChange({ ...crop, enabled: true, x, y, width, height });
+    onChange({
+      ...crop,
+      enabled: true,
+      ratio: active.mode === 'move' ? crop.ratio : '자유',
+      x,
+      y,
+      width,
+      height,
+    });
   };
   const stop = (event: React.PointerEvent) => {
     if (!drag.current) return;
@@ -1278,20 +1332,48 @@ function CropFrame({
     drag.current = null;
     onEditEnd();
   };
+  const moveWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const directions: Record<string, { x: number; y: number }> = {
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 },
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+    };
+    const direction = directions[event.key];
+    if (!direction) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 0.01 : 0.0025;
+    const constrained = constrainCropPosition(imageAspect, crop.rotation, {
+      x: crop.x + direction.x * step,
+      y: crop.y + direction.y * step,
+      width: crop.width,
+      height: crop.height,
+    });
+    onEditStart();
+    onChange({ ...crop, enabled: true, x: constrained.x, y: constrained.y });
+    onEditEnd();
+  };
   return (
     <div
       ref={frameRef}
       className="crop-frame"
+      tabIndex={0}
+      role="group"
+      aria-label="자르기 영역. 방향키로 이동"
       style={{
         left: `${crop.x * 100}%`,
         top: `${crop.y * 100}%`,
         width: `${crop.width * 100}%`,
         height: `${crop.height * 100}%`,
       }}
-      onPointerDown={(event) => start('move', event)}
+      onPointerDown={(event) => {
+        frameRef.current?.focus();
+        start('move', event);
+      }}
       onPointerMove={move}
       onPointerUp={stop}
       onPointerCancel={stop}
+      onKeyDown={moveWithKeyboard}
     >
       {(['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const).map((position) => (
         <i key={position} className={`corner ${position}`} onPointerDown={(event) => start(position, event)} />
@@ -1316,6 +1398,8 @@ function CropPanel({
   onEditStart: () => void;
   onEditEnd: () => void;
 }) {
+  const [rotationDraft, setRotationDraft] = useState(crop.rotation.toFixed(1));
+  useEffect(() => setRotationDraft(crop.rotation.toFixed(1)), [crop.rotation]);
   const update = (changes: Partial<CropState>) => onChange({
     ...crop,
     ...changes,
@@ -1327,19 +1411,24 @@ function CropPanel({
     onEditEnd();
   };
   const changeRatio = (ratio: string) => {
-    if (ratio === '원본') {
+    if (ratio === '자유') {
       commit({ ratio });
+      return;
+    }
+    if (ratio === '원본') {
+      const target = imageAspect;
+      commit({ ratio, ...maximumFixedRatioCrop(imageAspect, crop.rotation, target) });
       return;
     }
     const [wide, high] = ratio.split(':').map(Number);
     const target = wide / high;
-    let width = 0.9;
-    let height = width * imageAspect / target;
-    if (height > 0.9) {
-      height = 0.9;
-      width = height * target / imageAspect;
-    }
-    commit({ ratio, x: (1 - width) / 2, y: (1 - height) / 2, width, height });
+    commit({ ratio, ...maximumFixedRatioCrop(imageAspect, crop.rotation, target) });
+  };
+  const applyRotation = (rotation: number) => {
+    const value = Math.min(45, Math.max(-45, rotation));
+    const oldBoundsAspect = boundingAspectForRotation(imageAspect, crop.rotation);
+    const targetAspect = crop.width * oldBoundsAspect / Math.max(0.0001, crop.height);
+    update({ ...maximumFixedRatioCrop(imageAspect, value, targetAspect), rotation: value });
   };
   return (
     <div className="crop-panel">
@@ -1356,6 +1445,7 @@ function CropPanel({
           <span>비율</span>
           <select value={crop.ratio} onChange={(event) => changeRatio(event.currentTarget.value)}>
             <option value="원본">원본</option>
+            <option value="자유">자유</option>
             <option value="1:1">1:1</option>
             <option value="4:3">4:3</option>
             <option value="3:2">3:2</option>
@@ -1366,7 +1456,29 @@ function CropPanel({
         <label className="slider-control">
           <span>
             <span>수평 맞춤</span>
-            <output>{crop.rotation.toFixed(1)}°</output>
+            <input
+              className="slider-value-input"
+              type="number"
+              min="-45"
+              max="45"
+              step="0.1"
+              value={rotationDraft}
+              aria-label="수평 맞춤 각도"
+              onFocus={onEditStart}
+              onChange={(event) => setRotationDraft(event.currentTarget.value)}
+              onBlur={() => {
+                const parsed = Number(rotationDraft);
+                applyRotation(Number.isFinite(parsed) ? parsed : crop.rotation);
+                onEditEnd();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.currentTarget.blur();
+                if (event.key === 'Escape') {
+                  setRotationDraft(crop.rotation.toFixed(1));
+                  event.currentTarget.blur();
+                }
+              }}
+            />
           </span>
           <input
             type="range"
@@ -1380,9 +1492,7 @@ function CropPanel({
             onPointerCancel={onEditEnd}
             onChange={(event) => {
               const rotation = Number(event.currentTarget.value);
-              const oldBoundsAspect = boundingAspectForRotation(imageAspect, crop.rotation);
-              const targetAspect = crop.width * oldBoundsAspect / Math.max(0.0001, crop.height);
-              update({ ...maximumFixedRatioCrop(imageAspect, rotation, targetAspect), rotation });
+              applyRotation(rotation);
             }}
           />
         </label>
