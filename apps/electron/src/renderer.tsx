@@ -1182,9 +1182,9 @@ function CurveEditor({
         ))}
         <button className="curve-reset" onClick={() => {
           onEditStart();
-          onChange(channel, []);
+          (['rgb', 'red', 'green', 'blue'] as CurveChannel[]).forEach((item) => onChange(item, []));
           onEditEnd();
-        }}>초기화</button>
+        }}>전체 초기화</button>
       </div>
       <svg
         ref={svgRef}
