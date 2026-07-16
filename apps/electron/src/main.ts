@@ -4,6 +4,7 @@ import {
   dialog,
   ipcMain,
   MessageChannelMain,
+  nativeImage,
   net,
   protocol,
   session,
@@ -127,6 +128,11 @@ async function toImageFile(filePath: string): Promise<ImageFile> {
   };
 }
 
+async function openImagePaths(filePaths: string[]) {
+  const uniquePaths = [...new Set(filePaths.filter((filePath) => typeof filePath === 'string' && filePath))];
+  return Promise.all(uniquePaths.map(toImageFile));
+}
+
 ipcMain.handle('images:open', async (): Promise<ImageFile[]> => {
   debugLog('info', '파일', '이미지 선택 창을 열었습니다.');
   const result = await dialog.showOpenDialog({
@@ -141,13 +147,28 @@ ipcMain.handle('images:open', async (): Promise<ImageFile[]> => {
   }
   debugLog('info', '엔진', `${result.filePaths.length}개 이미지를 불러오는 중입니다.`);
   try {
-    const images = await Promise.all(result.filePaths.map(toImageFile));
+    const images = await openImagePaths(result.filePaths);
     debugLog('info', '엔진', `${images.length}개 이미지 로드를 완료했습니다.`);
     return images;
   } catch (error) {
     debugLog('error', '엔진', `이미지 로드 실패: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
+});
+
+ipcMain.handle('images:open-paths', async (_event, filePaths: unknown): Promise<ImageFile[]> => {
+  if (!Array.isArray(filePaths) || filePaths.some((filePath) => typeof filePath !== 'string')) {
+    throw new Error('Invalid dropped image paths');
+  }
+  debugLog('info', '파일', `${filePaths.length}개 드롭 파일을 불러오는 중입니다.`);
+  return openImagePaths(filePaths);
+});
+
+ipcMain.handle('images:close', async (_event, imageId: number) => {
+  if (!Number.isSafeInteger(imageId) || imageId <= 0) throw new Error('Invalid image id');
+  await engineWorker.closeImage(imageId);
+  debugLog('debug', '파일', `이미지 #${imageId}를 목록에서 닫았습니다.`);
+  return true;
 });
 
 ipcMain.handle('images:export', async (
@@ -183,6 +204,26 @@ ipcMain.handle('images:export', async (
     debugLog('error', '내보내기', `저장 실패: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
+});
+
+ipcMain.handle('images:drag-export', async (
+  event,
+  imageId: number,
+  params: EditParams,
+  requestedFormat: ExportFormat,
+) => {
+  const format = typeof requestedFormat === 'string' && requestedFormat in imageExportFormats
+    ? requestedFormat as ExportFormat
+    : 'jpeg';
+  const definition = imageExportFormats[format];
+  const sourcePath = engineWorker.getImagePath(imageId);
+  const dragRoot = path.join(app.getPath('temp'), 'RawElectron', 'drag-export');
+  fs.mkdirSync(dragRoot, { recursive: true });
+  const outputPath = path.join(dragRoot, `${path.parse(sourcePath).name}.${definition.extension}`);
+  await engineWorker.exportRenderedImage({ imageId, outputPath, params });
+  const icon = nativeImage.createFromPath(outputPath).resize({ width: 64, height: 64 });
+  event.sender.startDrag({ file: outputPath, icon });
+  return { path: outputPath };
 });
 
 ipcMain.handle(

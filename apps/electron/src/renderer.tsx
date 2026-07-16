@@ -44,11 +44,18 @@ declare global {
   interface Window {
     rawElectron: {
       openImages: () => Promise<ImageFile[]>;
+      openDroppedImages: (files: File[]) => Promise<ImageFile[]>;
+      closeImage: (imageId: number) => Promise<boolean>;
       exportImage: (
         imageId: number,
         params: EditParams,
         format: ExportFormat,
       ) => Promise<{ canceled: boolean; path?: string }>;
+      dragExportImage: (
+        imageId: number,
+        params: EditParams,
+        format: ExportFormat,
+      ) => Promise<{ path: string }>;
       getDebugLogs: () => Promise<DebugLogEntry[]>;
       onDebugLog: (callback: (entry: DebugLogEntry) => void) => () => void;
       requestSharedPreviewChannel: () => void;
@@ -175,6 +182,10 @@ function App() {
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('jpeg');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<{ path: string } | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ imageId: number; x: number; y: number } | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const engineRequestId = useRef(0);
   const generatedPreviewUrl = useRef<string | null>(null);
@@ -222,6 +233,23 @@ function App() {
       portCleanup(sharedPreviewPort.current);
     };
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' || selectedImageId === null || isExporting) return;
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return;
+      event.preventDefault();
+      void removeImage(selectedImageId);
+    };
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('click', closeMenu);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('click', closeMenu);
+    };
+  });
 
   useEffect(() => {
     let active = true;
@@ -355,13 +383,75 @@ function App() {
     }
   };
 
-  const exportImage = async () => {
-    if (!selectedImage) return;
+  const addOpenedImages = (opened: ImageFile[]) => {
+    if (!opened.length) return;
+    setImages((current) => {
+      const ids = new Set(current.map((image) => image.id));
+      return [...current, ...opened.filter((image) => !ids.has(image.id))];
+    });
+    setSelectedImageId(opened[0].id);
+    setStatusMessage(`${opened.length}개 이미지를 열었습니다.`);
+  };
+
+  const openDroppedImages = async (files: File[]) => {
+    if (!files.length || isExporting) return;
     try {
-      const result = await window.rawElectron.exportImage(selectedImage.id, editParams, exportFormat);
-      if (!result.canceled) setStatusMessage(`저장 완료: ${result.path ?? ''}`);
+      setStatusMessage('드롭한 이미지를 여는 중입니다…');
+      addOpenedImages(await window.rawElectron.openDroppedImages(files));
     } catch (error) {
-      setStatusMessage(`내보내기 실패: ${error instanceof Error ? error.message : String(error)}`);
+      setStatusMessage(`드롭 파일 열기 실패: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const removeImage = async (imageId: number) => {
+    const index = images.findIndex((image) => image.id === imageId);
+    if (index < 0) return;
+    try {
+      await window.rawElectron.closeImage(imageId);
+      const remaining = images.filter((image) => image.id !== imageId);
+      setImages(remaining);
+      if (selectedImageId === imageId) {
+        setSelectedImageId(remaining[Math.min(index, remaining.length - 1)]?.id ?? null);
+      }
+      setContextMenu(null);
+      setStatusMessage('이미지를 목록에서 제거했습니다. 원본 파일은 유지됩니다.');
+    } catch (error) {
+      setStatusMessage(`목록 제거 실패: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const dragOutput = async (imageId: number, event: React.DragEvent) => {
+    if (isExporting) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = 'copy';
+    setStatusMessage('드래그 출력 파일을 준비하는 중입니다…');
+    try {
+      await window.rawElectron.dragExportImage(imageId, editParams, exportFormat);
+      setStatusMessage(`${exportFormat.toUpperCase()} 파일을 드래그해 내보냈습니다.`);
+    } catch (error) {
+      setStatusMessage(`드래그 출력 실패: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const exportImage = async () => {
+    if (!selectedImage || isExporting) return;
+    try {
+      setIsExporting(true);
+      setStatusMessage('이미지를 저장하고 있습니다…');
+      const result = await window.rawElectron.exportImage(selectedImage.id, editParams, exportFormat);
+      if (result.canceled) {
+        setStatusMessage('저장이 취소되었습니다.');
+      } else {
+        const savedPath = result.path ?? '';
+        setStatusMessage(`저장 완료: ${savedPath}`);
+        setExportResult({ path: savedPath });
+      }
+    } catch (error) {
+      setStatusMessage(`저장 실패: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -372,17 +462,41 @@ function App() {
   };
 
   return (
-    <div className="raw-app" data-theme={theme} data-logs={showLogs}>
+    <div
+      className="raw-app"
+      data-theme={theme}
+      data-logs={showLogs}
+      onDragEnter={(event) => {
+        if (event.dataTransfer.types.includes('Files')) setIsDragOver(true);
+      }}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes('Files')) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        setIsDragOver(true);
+      }}
+      onDragLeave={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setIsDragOver(false);
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.files.length) return;
+        event.preventDefault();
+        setIsDragOver(false);
+        void openDroppedImages(Array.from(event.dataTransfer.files));
+      }}
+    >
       <header className="app-header">
         <div className="brand">
           <strong>RawElectron</strong>
           <span>{selectedImage ? selectedImage.name : '이미지 편집기'}</span>
         </div>
         <div className="header-actions">
-          <button className="button" onClick={openImages}>파일 열기</button>
+          <button className="button" disabled={isExporting} onClick={openImages}>파일 열기</button>
           <label className="format-select">
             <span>저장 형식</span>
             <select
+              disabled={isExporting}
               value={exportFormat}
               onChange={(event) => setExportFormat(event.currentTarget.value as ExportFormat)}
             >
@@ -397,7 +511,9 @@ function App() {
               <option value="ras">Sun Raster</option>
             </select>
           </label>
-          <button className="button primary" disabled={!selectedImage} onClick={exportImage}>다른 이름으로 저장</button>
+          <button className="button primary" disabled={!selectedImage || isExporting} onClick={exportImage}>
+            {isExporting ? '저장 중…' : '다른 이름으로 저장'}
+          </button>
           <button className="button quiet" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? '밝은 화면' : '어두운 화면'}
           </button>
@@ -416,7 +532,17 @@ function App() {
               <button
                 key={image.id}
                 className={`image-item ${image.id === selectedImageId ? 'selected' : ''}`}
+                draggable
                 onClick={() => setSelectedImageId(image.id)}
+                onDragStart={(event) => {
+                  setSelectedImageId(image.id);
+                  void dragOutput(image.id, event);
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setSelectedImageId(image.id);
+                  setContextMenu({ imageId: image.id, x: event.clientX, y: event.clientY });
+                }}
               >
                 <span className="image-name">{image.name}</span>
                 <span>{image.width} × {image.height}</span>
@@ -429,13 +555,20 @@ function App() {
           <div className="canvas" ref={canvasRef}>
             {selectedImage ? (
               previewUrl
-                ? <img src={previewUrl} alt={selectedImage.name} onLoad={() => {
+                ? <img
+                    src={previewUrl}
+                    alt={selectedImage.name}
+                    draggable
+                    title="화면 밖으로 드래그해 현재 저장 형식으로 내보내기"
+                    onDragStart={(event) => void dragOutput(selectedImage.id, event)}
+                    onLoad={() => {
                     if (previewQuality) sharedPreviewPort.current?.postMessage({
                       type: 'shared-preview-displayed',
                       imageId: selectedImage.id,
                       quality: previewQuality,
                     });
-                  }} />
+                    }}
+                  />
                 : <div className="loading">미리보기를 만드는 중입니다…</div>
             ) : (
               <div className="empty-state">
@@ -478,6 +611,45 @@ function App() {
       </main>
 
       {showLogs && <DebugLogPanel logs={debugLogs} onClear={() => setDebugLogs([])} />}
+      {isDragOver && (
+        <div className="drop-overlay" aria-hidden="true">
+          <div>
+            <strong>이미지를 여기에 놓으세요</strong>
+            <span>여러 파일을 한 번에 추가할 수 있습니다.</span>
+          </div>
+        </div>
+      )}
+      {contextMenu && (
+        <div
+          className="context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button onClick={() => void removeImage(contextMenu.imageId)}>목록에서 제거</button>
+          <span>Delete 키로도 제거할 수 있습니다.</span>
+        </div>
+      )}
+      {isExporting && (
+        <div className="modal-backdrop" role="alert" aria-live="assertive" aria-busy="true">
+          <div className="progress-dialog">
+            <span className="spinner" aria-hidden="true" />
+            <div>
+              <strong>이미지를 저장하고 있습니다</strong>
+              <p>처리가 끝날 때까지 잠시 기다려 주세요.</p>
+            </div>
+          </div>
+        </div>
+      )}
+      {exportResult && !isExporting && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="export-complete-title">
+          <div className="result-dialog">
+            <div className="success-mark" aria-hidden="true">✓</div>
+            <h2 id="export-complete-title">저장이 완료되었습니다</h2>
+            <p>{exportResult.path}</p>
+            <button className="button primary" autoFocus onClick={() => setExportResult(null)}>확인</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

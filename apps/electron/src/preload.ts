@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { DebugLogEntry } from './shared/engineTypes';
 
 ipcRenderer.on('shared-preview-port', (event) => {
@@ -14,8 +14,13 @@ ipcRenderer.on('shared-preview-port', (event) => {
 
 contextBridge.exposeInMainWorld('rawElectron', {
   openImages: () => ipcRenderer.invoke('images:open'),
+  openDroppedImages: (files: File[]) =>
+    ipcRenderer.invoke('images:open-paths', files.map((file) => webUtils.getPathForFile(file))),
+  closeImage: (imageId: number) => ipcRenderer.invoke('images:close', imageId),
   exportImage: (imageId: number, params: unknown, format: unknown) =>
     ipcRenderer.invoke('images:export', imageId, params, format),
+  dragExportImage: (imageId: number, params: unknown, format: unknown) =>
+    ipcRenderer.invoke('images:drag-export', imageId, params, format),
   renderPreviewFile: (request: unknown) =>
     ipcRenderer.invoke('engine-preview-file:render', request),
   getDebugLogs: (): Promise<DebugLogEntry[]> => ipcRenderer.invoke('debug-logs:list'),
