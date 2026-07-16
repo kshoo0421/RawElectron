@@ -1054,42 +1054,66 @@ function AdjustmentPanel({
   onEditEnd: () => void;
 }) {
   const [curveExpanded, setCurveExpanded] = useState(false);
+  const [expandedSections, setExpandedSections] = useState<Record<ToolSectionId, boolean>>({
+    light: false,
+    color: false,
+    effects: false,
+    detail: false,
+    optics: false,
+  });
   return (
     <>
-      {sections.map((section) => (
-        <section className="control-section" key={section.id}>
-          <h2>{section.title}</h2>
-          {section.id === 'light' && (
-            <div className="curve-section">
-              <button
-                className="curve-section-toggle"
-                aria-expanded={curveExpanded}
-                onClick={() => setCurveExpanded((current) => !current)}
-              >
-                <span>RGB 커브</span>
-                <span aria-hidden="true">{curveExpanded ? '▾' : '▸'}</span>
-              </button>
-              {curveExpanded && (
-                <CurveEditor
-                  curves={curves}
-                  onChange={onCurveChange}
-                  onEditStart={onEditStart}
-                  onEditEnd={onEditEnd}
-                />
-              )}
-            </div>
-          )}
-          {section.controls.map((control) => (
-            <SliderControl
-              key={control.id}
-              control={control}
-              onEditStart={onEditStart}
-              onEditEnd={onEditEnd}
-              onChange={(value) => onSlider(section.id, control.id, value)}
-            />
-          ))}
-        </section>
-      ))}
+      {sections.map((section) => {
+        const expanded = expandedSections[section.id];
+        return (
+          <section className="control-section" key={section.id}>
+            <button
+              className="control-section-toggle"
+              aria-expanded={expanded}
+              onClick={() => setExpandedSections((current) => ({
+                ...current,
+                [section.id]: !current[section.id],
+              }))}
+            >
+              <span>{section.title}</span>
+              <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+            </button>
+            {expanded && (
+              <div className="control-section-content">
+                {section.id === 'light' && (
+                  <div className="curve-section">
+                    <button
+                      className="curve-section-toggle"
+                      aria-expanded={curveExpanded}
+                      onClick={() => setCurveExpanded((current) => !current)}
+                    >
+                      <span>RGB 커브</span>
+                      <span aria-hidden="true">{curveExpanded ? '▾' : '▸'}</span>
+                    </button>
+                    {curveExpanded && (
+                      <CurveEditor
+                        curves={curves}
+                        onChange={onCurveChange}
+                        onEditStart={onEditStart}
+                        onEditEnd={onEditEnd}
+                      />
+                    )}
+                  </div>
+                )}
+                {section.controls.map((control) => (
+                  <SliderControl
+                    key={control.id}
+                    control={control}
+                    onEditStart={onEditStart}
+                    onEditEnd={onEditEnd}
+                    onChange={(value) => onSlider(section.id, control.id, value)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        );
+      })}
     </>
   );
 }

@@ -246,8 +246,22 @@ button { color: inherit; }
 .control-scroll input, .control-scroll textarea { user-select: text; }
 .adjustment-fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .adjustment-fieldset:disabled { opacity: .45; }
-.control-section { padding: 16px; border-bottom: 1px solid var(--border); }
-.control-section h2 { margin: 0 0 15px; font-size: 13px; }
+.control-section { padding: 0 16px; border-bottom: 1px solid var(--border); }
+.control-section-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 46px;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.control-section-content { padding-bottom: 12px; }
 .slider-control { display: grid; gap: 7px; margin: 0 0 14px; }
 .slider-control > span { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
 .slider-value-input {
