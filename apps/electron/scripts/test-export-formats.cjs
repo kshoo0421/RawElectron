@@ -23,6 +23,13 @@ try {
     const outputPath = path.join(outputDir, `export.${extension}`);
     addon.exportRenderedImage({ imageId: image.id, outputPath, params: {} });
     if (!fs.statSync(outputPath).size) throw new Error(`${extension} export is empty`);
+    const signature = fs.readFileSync(outputPath).subarray(0, 8).toString('hex');
+    if (['jpg', 'jpeg', 'jpe'].includes(extension) && !signature.startsWith('ffd8ff')) {
+      throw new Error(`${extension} export does not contain JPEG data`);
+    }
+    if (extension === 'png' && signature !== '89504e470d0a1a0a') {
+      throw new Error('png export does not contain PNG data');
+    }
     const reopened = addon.openImage(outputPath);
     addon.closeImage(reopened.id);
     console.log('ok');

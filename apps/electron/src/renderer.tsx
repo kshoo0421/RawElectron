@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { DebugLogEntry, EditParams } from './shared/engineTypes';
+import type { DebugLogEntry, EditParams, ExportFormat } from './shared/engineTypes';
 import './index.css';
 
 type ThemeMode = 'dark' | 'light';
@@ -47,6 +47,7 @@ declare global {
       exportImage: (
         imageId: number,
         params: EditParams,
+        format: ExportFormat,
       ) => Promise<{ canceled: boolean; path?: string }>;
       getDebugLogs: () => Promise<DebugLogEntry[]>;
       onDebugLog: (callback: (entry: DebugLogEntry) => void) => () => void;
@@ -173,6 +174,7 @@ function App() {
   const [renderQuality, setRenderQuality] = useState<'proxy' | 'original'>('original');
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('jpeg');
   const canvasRef = useRef<HTMLDivElement>(null);
   const engineRequestId = useRef(0);
   const generatedPreviewUrl = useRef<string | null>(null);
@@ -356,7 +358,7 @@ function App() {
   const exportImage = async () => {
     if (!selectedImage) return;
     try {
-      const result = await window.rawElectron.exportImage(selectedImage.id, editParams);
+      const result = await window.rawElectron.exportImage(selectedImage.id, editParams, exportFormat);
       if (!result.canceled) setStatusMessage(`저장 완료: ${result.path ?? ''}`);
     } catch (error) {
       setStatusMessage(`내보내기 실패: ${error instanceof Error ? error.message : String(error)}`);
@@ -378,6 +380,23 @@ function App() {
         </div>
         <div className="header-actions">
           <button className="button" onClick={openImages}>파일 열기</button>
+          <label className="format-select">
+            <span>저장 형식</span>
+            <select
+              value={exportFormat}
+              onChange={(event) => setExportFormat(event.currentTarget.value as ExportFormat)}
+            >
+              <option value="jpeg">JPEG</option>
+              <option value="png">PNG</option>
+              <option value="webp">WebP</option>
+              <option value="tiff">TIFF</option>
+              <option value="bmp">BMP</option>
+              <option value="jpeg2000">JPEG 2000</option>
+              <option value="ppm">PPM</option>
+              <option value="hdr">HDR</option>
+              <option value="ras">Sun Raster</option>
+            </select>
+          </label>
           <button className="button primary" disabled={!selectedImage} onClick={exportImage}>다른 이름으로 저장</button>
           <button className="button quiet" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? '밝은 화면' : '어두운 화면'}

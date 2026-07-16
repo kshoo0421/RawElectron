@@ -89,6 +89,17 @@ export type EngineWorkerExportRequest = {
   params: EditParams;
 };
 
+export type ExportFormat =
+  | 'jpeg'
+  | 'png'
+  | 'webp'
+  | 'tiff'
+  | 'bmp'
+  | 'jpeg2000'
+  | 'ppm'
+  | 'hdr'
+  | 'ras';
+
 export type DebugLogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export type DebugLogEntry = {

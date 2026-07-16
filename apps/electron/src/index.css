@@ -57,6 +57,25 @@ button { color: inherit; }
 .brand strong { font-size: 17px; letter-spacing: -.2px; }
 .brand span { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .header-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.format-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--surface-3);
+  font-size: 12px;
+}
+.format-select select {
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+.format-select option { color: var(--text); background: var(--surface-2); }
 
 .button {
   min-height: 34px;

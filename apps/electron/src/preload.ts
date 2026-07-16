@@ -14,8 +14,8 @@ ipcRenderer.on('shared-preview-port', (event) => {
 
 contextBridge.exposeInMainWorld('rawElectron', {
   openImages: () => ipcRenderer.invoke('images:open'),
-  exportImage: (imageId: number, params: unknown) =>
-    ipcRenderer.invoke('images:export', imageId, params),
+  exportImage: (imageId: number, params: unknown, format: unknown) =>
+    ipcRenderer.invoke('images:export', imageId, params, format),
   renderPreviewFile: (request: unknown) =>
     ipcRenderer.invoke('engine-preview-file:render', request),
   getDebugLogs: (): Promise<DebugLogEntry[]> => ipcRenderer.invoke('debug-logs:list'),

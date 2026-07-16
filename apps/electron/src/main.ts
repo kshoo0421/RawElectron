@@ -19,6 +19,7 @@ import type {
   EngineWorkerRenderRequest,
   DebugLogEntry,
   DebugLogLevel,
+  ExportFormat,
 } from './shared/engineTypes';
 
 protocol.registerSchemesAsPrivileged([
@@ -95,17 +96,24 @@ const imageOpenFilters = [
   },
 ];
 
-const imageExportFilters = [
-  { name: 'JPEG', extensions: ['jpg', 'jpeg', 'jpe'] },
-  { name: 'PNG', extensions: ['png'] },
-  { name: 'WebP', extensions: ['webp'] },
-  { name: 'TIFF', extensions: ['tif', 'tiff'] },
-  { name: 'Bitmap', extensions: ['bmp', 'dib'] },
-  { name: 'JPEG 2000', extensions: ['jp2', 'j2k', 'jpc'] },
-  { name: 'Portable images', extensions: ['pbm', 'pgm', 'ppm', 'pam', 'pnm'] },
-  { name: 'Radiance HDR', extensions: ['hdr', 'pic'] },
-  { name: 'Sun raster', extensions: ['sr', 'ras'] },
-];
+const imageExportFormats: Record<ExportFormat, { name: string; extension: string; extensions: string[] }> = {
+  jpeg: { name: 'JPEG', extension: 'jpg', extensions: ['jpg', 'jpeg', 'jpe'] },
+  png: { name: 'PNG', extension: 'png', extensions: ['png'] },
+  webp: { name: 'WebP', extension: 'webp', extensions: ['webp'] },
+  tiff: { name: 'TIFF', extension: 'tiff', extensions: ['tif', 'tiff'] },
+  bmp: { name: 'Bitmap', extension: 'bmp', extensions: ['bmp', 'dib'] },
+  jpeg2000: { name: 'JPEG 2000', extension: 'jp2', extensions: ['jp2', 'j2k', 'jpc'] },
+  ppm: { name: 'Portable Pixmap', extension: 'ppm', extensions: ['ppm'] },
+  hdr: { name: 'Radiance HDR', extension: 'hdr', extensions: ['hdr', 'pic'] },
+  ras: { name: 'Sun raster', extension: 'ras', extensions: ['sr', 'ras'] },
+};
+
+function outputPathForFormat(filePath: string, format: ExportFormat) {
+  const definition = imageExportFormats[format];
+  const parsed = path.parse(filePath);
+  if (definition.extensions.includes(parsed.ext.slice(1).toLowerCase())) return filePath;
+  return path.join(parsed.dir, `${parsed.name}.${definition.extension}`);
+}
 
 async function toImageFile(filePath: string): Promise<ImageFile> {
   const opened = await engineWorker.openImage(filePath);
@@ -142,14 +150,23 @@ ipcMain.handle('images:open', async (): Promise<ImageFile[]> => {
   }
 });
 
-ipcMain.handle('images:export', async (_event, imageId: number, params: EditParams) => {
+ipcMain.handle('images:export', async (
+  _event,
+  imageId: number,
+  params: EditParams,
+  requestedFormat: ExportFormat,
+) => {
   debugLog('info', '내보내기', `이미지 #${imageId} 저장 위치를 선택하는 중입니다.`);
   const sourcePath = engineWorker.getImagePath(imageId);
   const parsedSource = path.parse(sourcePath);
+  const format = typeof requestedFormat === 'string' && requestedFormat in imageExportFormats
+    ? requestedFormat as ExportFormat
+    : 'jpeg';
+  const definition = imageExportFormats[format];
   const result = await dialog.showSaveDialog({
     title: 'Export image',
-    defaultPath: `${parsedSource.name}.png`,
-    filters: imageExportFilters,
+    defaultPath: `${parsedSource.name}.${definition.extension}`,
+    filters: [{ name: definition.name, extensions: definition.extensions }],
   });
 
   if (result.canceled || !result.filePath) {
@@ -158,9 +175,10 @@ ipcMain.handle('images:export', async (_event, imageId: number, params: EditPara
   }
   try {
     debugLog('info', '내보내기', `이미지 #${imageId} 렌더링을 시작합니다.`);
-    await engineWorker.exportRenderedImage({ imageId, outputPath: result.filePath, params });
+    const outputPath = outputPathForFormat(result.filePath, format);
+    await engineWorker.exportRenderedImage({ imageId, outputPath, params });
     debugLog('info', '내보내기', `저장을 완료했습니다: ${result.filePath}`);
-    return { canceled: false, path: result.filePath };
+    return { canceled: false, path: outputPath };
   } catch (error) {
     debugLog('error', '내보내기', `저장 실패: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
