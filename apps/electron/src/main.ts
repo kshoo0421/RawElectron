@@ -79,7 +79,7 @@ type ImageFile = {
   pixelFormat: 'rgba8';
 };
 
-const imageFilters = [
+const imageOpenFilters = [
   {
     name: 'Images',
     extensions: [
@@ -93,6 +93,18 @@ const imageFilters = [
       'raw', 'rdc', 'rw2', 'rwl', 'rwz', 'sr2', 'srf', 'srw', 'sti', 'x3f',
     ],
   },
+];
+
+const imageExportFilters = [
+  { name: 'JPEG', extensions: ['jpg', 'jpeg', 'jpe'] },
+  { name: 'PNG', extensions: ['png'] },
+  { name: 'WebP', extensions: ['webp'] },
+  { name: 'TIFF', extensions: ['tif', 'tiff'] },
+  { name: 'Bitmap', extensions: ['bmp', 'dib'] },
+  { name: 'JPEG 2000', extensions: ['jp2', 'j2k', 'jpc'] },
+  { name: 'Portable images', extensions: ['pbm', 'pgm', 'ppm', 'pam', 'pnm'] },
+  { name: 'Radiance HDR', extensions: ['hdr', 'pic'] },
+  { name: 'Sun raster', extensions: ['sr', 'ras'] },
 ];
 
 async function toImageFile(filePath: string): Promise<ImageFile> {
@@ -112,7 +124,7 @@ ipcMain.handle('images:open', async (): Promise<ImageFile[]> => {
   const result = await dialog.showOpenDialog({
     title: 'Open images',
     properties: ['openFile', 'multiSelections'],
-    filters: imageFilters,
+    filters: imageOpenFilters,
   });
 
   if (result.canceled) {
@@ -133,10 +145,11 @@ ipcMain.handle('images:open', async (): Promise<ImageFile[]> => {
 ipcMain.handle('images:export', async (_event, imageId: number, params: EditParams) => {
   debugLog('info', '내보내기', `이미지 #${imageId} 저장 위치를 선택하는 중입니다.`);
   const sourcePath = engineWorker.getImagePath(imageId);
+  const parsedSource = path.parse(sourcePath);
   const result = await dialog.showSaveDialog({
     title: 'Export image',
-    defaultPath: path.basename(sourcePath),
-    filters: imageFilters,
+    defaultPath: `${parsedSource.name}.png`,
+    filters: imageExportFilters,
   });
 
   if (result.canceled || !result.filePath) {

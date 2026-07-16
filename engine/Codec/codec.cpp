@@ -268,16 +268,57 @@ image_core::Status encode_file(const image_core::Bitmap& bitmap, const std::stri
   std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char value) {
     return static_cast<char>(std::tolower(value));
   });
+
+  std::string encoder_extension = extension;
+  if (encoder_extension == ".jpe") encoder_extension = ".jpg";
+  if (encoder_extension == ".tif") encoder_extension = ".tiff";
+  if (encoder_extension == ".dib") encoder_extension = ".bmp";
+  if (encoder_extension == ".j2k" || encoder_extension == ".jpc") encoder_extension = ".jp2";
+  if (encoder_extension == ".pnm") encoder_extension = ".ppm";
+  if (encoder_extension == ".pic") encoder_extension = ".hdr";
+  if (encoder_extension == ".sr") encoder_extension = ".ras";
+
+  static constexpr std::array<std::string_view, 12> writable_extensions = {
+      ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff",
+      ".jp2", ".pbm", ".pgm", ".ppm", ".pam", ".hdr"};
+  const bool writable = std::find(
+      writable_extensions.begin(), writable_extensions.end(), encoder_extension) !=
+      writable_extensions.end() || encoder_extension == ".ras";
+  if (!writable) {
+    return {
+        image_core::StatusCode::unsupported_format,
+        "Unsupported output format. Camera RAW and read-only image formats cannot be exported"};
+  }
+
   cv::Mat encoded;
-  if (extension == ".jpg" || extension == ".jpeg") {
+  const bool discard_alpha =
+      encoder_extension == ".jpg" || encoder_extension == ".jpeg" ||
+      encoder_extension == ".jp2" || encoder_extension == ".pbm" ||
+      encoder_extension == ".pgm" || encoder_extension == ".ppm" ||
+      encoder_extension == ".hdr" || encoder_extension == ".ras";
+  if (discard_alpha) {
     cv::cvtColor(as_rgba_mat(bitmap), encoded, cv::COLOR_RGBA2BGR);
   } else {
     cv::cvtColor(as_rgba_mat(bitmap), encoded, cv::COLOR_RGBA2BGRA);
   }
-  if (extension.empty()) extension = ".png";
+  if (encoder_extension == ".pgm" || encoder_extension == ".pbm") {
+    cv::cvtColor(as_rgba_mat(bitmap), encoded, cv::COLOR_RGBA2GRAY);
+  } else if (encoder_extension == ".hdr") {
+    encoded.convertTo(encoded, CV_32F, 1.0 / 255.0);
+  }
   std::vector<std::uint8_t> file_bytes;
-  if (!cv::imencode(extension, encoded, file_bytes)) {
-    return {image_core::StatusCode::internal_error, "Failed to encode output image"};
+  std::vector<int> encoder_parameters;
+  if (encoder_extension == ".pam") {
+    encoder_parameters = {cv::IMWRITE_PAM_TUPLETYPE, cv::IMWRITE_PAM_FORMAT_RGB_ALPHA};
+  }
+  try {
+    if (!cv::imencode(encoder_extension, encoded, file_bytes, encoder_parameters)) {
+      return {image_core::StatusCode::internal_error, "Failed to encode output image"};
+    }
+  } catch (const cv::Exception& error) {
+    return {
+        image_core::StatusCode::unsupported_format,
+        std::string("Output encoder rejected this format: ") + error.what()};
   }
   return write_file(output_path, file_bytes);
 }
