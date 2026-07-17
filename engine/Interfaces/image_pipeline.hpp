@@ -36,6 +36,7 @@ class IPipelineStage {
   virtual ~IPipelineStage() = default;
   [[nodiscard]] virtual PipelineStageKind kind() const noexcept = 0;
   [[nodiscard]] virtual std::string_view name() const noexcept = 0;
+  [[nodiscard]] virtual bool active(const PipelineContext&) const { return true; }
   virtual image_core::Status process(
       const image_core::Bitmap& input,
       const PipelineContext& context,

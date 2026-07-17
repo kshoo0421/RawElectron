@@ -12,6 +12,7 @@ namespace rawelectron::processing {
 namespace {
 
 using AdjustmentSelector = image_core::Adjustment (*)(const image_core::Adjustment&);
+bool has_pixel_adjustment(const image_core::Adjustment& value);
 
 class AdjustmentStage final : public interfaces::IPipelineStage {
  public:
@@ -23,6 +24,9 @@ class AdjustmentStage final : public interfaces::IPipelineStage {
 
   [[nodiscard]] interfaces::PipelineStageKind kind() const noexcept override { return kind_; }
   [[nodiscard]] std::string_view name() const noexcept override { return name_; }
+  [[nodiscard]] bool active(const interfaces::PipelineContext& context) const override {
+    return has_pixel_adjustment(selector_(context.adjustment));
+  }
 
   image_core::Status process(
       const image_core::Bitmap& input,
@@ -37,6 +41,22 @@ class AdjustmentStage final : public interfaces::IPipelineStage {
   std::string_view name_;
   AdjustmentSelector selector_;
 };
+
+bool has_pixel_adjustment(const image_core::Adjustment& value) {
+  return value.exposure != 0.0 || value.contrast != 0.0 || value.highlights != 0.0 ||
+      value.shadows != 0.0 || value.whites != 0.0 || value.blacks != 0.0 ||
+      value.temperature != 0.0 || value.tint != 0.0 || value.vibrance != 0.0 ||
+      value.saturation != 0.0 || value.red_hue != 0.0 || value.red_saturation != 0.0 ||
+      value.green_hue != 0.0 || value.green_saturation != 0.0 ||
+      value.blue_hue != 0.0 || value.blue_saturation != 0.0 ||
+      value.shadow_saturation != 0.0 || value.midtone_saturation != 0.0 ||
+      value.highlight_saturation != 0.0 || value.texture != 0.0 || value.clarity != 0.0 ||
+      value.dehaze != 0.0 || value.vignette != 0.0 || value.grain != 0.0 ||
+      value.sharpening != 0.0 || value.luminance_noise != 0.0 || value.color_noise != 0.0 ||
+      value.moire != 0.0 || value.defringe != 0.0 || value.remove_chromatic_aberration ||
+      value.lens_correction || !value.curve_rgb.empty() || !value.curve_red.empty() ||
+      !value.curve_green.empty() || !value.curve_blue.empty();
+}
 
 image_core::Adjustment select_global(const image_core::Adjustment& source) {
   image_core::Adjustment result;
@@ -207,13 +227,13 @@ image_core::Status CpuImagePipeline::execute(
     return {image_core::StatusCode::invalid_argument, "Pipeline requires a valid bitmap"};
   }
 
-  image_core::Bitmap current = input;
-  for (const auto& stage : stages_) {
-    image_core::Bitmap next;
-    const auto status = stage->process(current, context, next);
-    if (!status.ok()) return status;
-    current = std::move(next);
-  }
+  // BasicProcessor already supports the complete adjustment model. Running it
+  // once avoids four full-frame copies and four generic pixel passes for the
+  // light, tone, colour and detail stage metadata exposed by stages().
+  image_core::Bitmap current;
+  BasicProcessor processor;
+  const auto processing_status = processor.process(input, context.adjustment, current);
+  if (!processing_status.ok()) return processing_status;
   apply_geometry(context.adjustment, current);
   output = std::move(current);
   return image_core::Status::success();

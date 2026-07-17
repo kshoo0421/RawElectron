@@ -266,12 +266,10 @@ const editSections: ToolSection[] = [
   },
   {
     id: 'optics',
-    title: '아티팩트 감소',
+    title: '광학',
     controls: [
       { id: 'removeCa', label: 'CA 제거', min: 0, max: 1, value: 0, step: 1 },
       { id: 'lensCorrection', label: '렌즈 교정 사용', min: 0, max: 1, value: 0, step: 1 },
-      { id: 'moire', label: '모아레 감소', min: 0, max: 100, value: 0 },
-      { id: 'defringe', label: '프린지 제거', min: 0, max: 100, value: 0 },
     ],
   },
 ];
@@ -532,6 +530,8 @@ function App() {
   const libraryLoaded = useRef(false);
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewReady, setPreviewReady] = useState(false);
+  const [previewFrameVersion, setPreviewFrameVersion] = useState(0);
   const [previewQuality, setPreviewQuality] = useState<'proxy' | 'original' | null>(null);
   const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
   const [histograms, setHistograms] = useState<Histograms | null>(null);
@@ -559,6 +559,8 @@ function App() {
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const previewImageRef = useRef<HTMLImageElement>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
+  const previewPixelsRef = useRef<SharedPreviewResult | null>(null);
   const panStart = useRef({ pointerX: 0, pointerY: 0, panX: 0, panY: 0 });
   const engineRequestId = useRef(0);
   const generatedPreviewUrl = useRef<string | null>(null);
@@ -574,6 +576,7 @@ function App() {
   const redoStack = useRef<EditState[]>([]);
   const transactionStart = useRef<EditState | null>(null);
   const editLoadRequest = useRef(0);
+  const proxyRenderFrame = useRef<number | null>(null);
   const [, setHistoryVersion] = useState(0);
 
   const selectedImage = images.find((image) => image.id === selectedImageId) ?? null;
@@ -657,6 +660,13 @@ function App() {
     redoStack.current = [];
     setHistoryVersion((value) => value + 1);
   };
+  const scheduleProxyRender = (state: EditState) => {
+    if (proxyRenderFrame.current !== null) window.cancelAnimationFrame(proxyRenderFrame.current);
+    proxyRenderFrame.current = window.requestAnimationFrame(() => {
+      proxyRenderFrame.current = null;
+      setRenderParams(buildEditParams(state.sections, state.curves, state.crop));
+    });
+  };
   const beginEdit = () => {
     if (!transactionStart.current) transactionStart.current = cloneEditState(editStateRef.current);
   };
@@ -664,7 +674,22 @@ function App() {
     const start = transactionStart.current;
     transactionStart.current = null;
     if (start && JSON.stringify(start) !== JSON.stringify(editStateRef.current)) pushUndo(start);
+    if (proxyRenderFrame.current !== null) {
+      window.cancelAnimationFrame(proxyRenderFrame.current);
+      proxyRenderFrame.current = null;
+    }
+    setRenderParams(buildEditParams(
+      editStateRef.current.sections,
+      editStateRef.current.curves,
+      editStateRef.current.crop,
+    ));
     setRenderQuality('original');
+    if (selectedImageId !== null) {
+      void window.rawElectron.saveEditState(
+        selectedImageId,
+        serializeEditState(editStateRef.current),
+      );
+    }
   };
   const undo = () => {
     endEdit();
@@ -689,30 +714,54 @@ function App() {
     setHistoryVersion((value) => value + 1);
   };
   const changeSliderValue = (sectionId: ToolSectionId, controlId: string, value: number) => {
-    const nextSections = updateSlider(editStateRef.current.sections, sectionId, controlId, value);
-    editStateRef.current = { ...editStateRef.current, sections: nextSections };
+    let nextSections = updateSlider(editStateRef.current.sections, sectionId, controlId, value);
+    const dependentEffects: Record<string, { parent: string; value: number }> = {
+      vignetteMidpoint: { parent: 'vignette', value: 25 },
+      vignetteRoundness: { parent: 'vignette', value: 25 },
+      vignetteFeather: { parent: 'vignette', value: 25 },
+      vignetteHighlights: { parent: 'vignette', value: 25 },
+      grainSize: { parent: 'grain', value: 25 },
+      grainRoughness: { parent: 'grain', value: 25 },
+      sharpeningRadius: { parent: 'sharpening', value: 40 },
+      sharpeningDetail: { parent: 'sharpening', value: 40 },
+      sharpeningMasking: { parent: 'sharpening', value: 40 },
+      luminanceNoiseDetail: { parent: 'luminanceNoise', value: 25 },
+      luminanceNoiseContrast: { parent: 'luminanceNoise', value: 25 },
+      colorNoiseDetail: { parent: 'colorNoise', value: 25 },
+      colorNoiseSmoothness: { parent: 'colorNoise', value: 25 },
+      shadowHue: { parent: 'shadowSaturation', value: 20 },
+      midtoneHue: { parent: 'midtoneSaturation', value: 20 },
+      highlightHue: { parent: 'highlightSaturation', value: 20 },
+    };
+    const dependency = dependentEffects[controlId];
+    if (dependency && sliderValue(nextSections, dependency.parent) === 0) {
+      nextSections = updateSlider(nextSections, sectionId, dependency.parent, dependency.value);
+    }
+    if ((controlId === 'colorGradingBlending' || controlId === 'colorGradingBalance') &&
+        sliderValue(nextSections, 'shadowSaturation') === 0 &&
+        sliderValue(nextSections, 'midtoneSaturation') === 0 &&
+        sliderValue(nextSections, 'highlightSaturation') === 0) {
+      nextSections = updateSlider(nextSections, 'color', 'midtoneHue', 35);
+      nextSections = updateSlider(nextSections, 'color', 'midtoneSaturation', 15);
+    }
+    const nextState = { ...editStateRef.current, sections: nextSections };
+    editStateRef.current = nextState;
     setSections(nextSections);
     setRenderQuality('proxy');
-    if (selectedImageId !== null) {
-      void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
-    }
+    scheduleProxyRender(nextState);
   };
   const changeCurve = (channel: CurveChannel, points: CurvePoint[]) => {
     const nextCurves = { ...editStateRef.current.curves, [channel]: points };
     editStateRef.current = { ...editStateRef.current, curves: nextCurves };
     setCurves(nextCurves);
     setRenderQuality('proxy');
-    if (selectedImageId !== null) {
-      void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
-    }
+    scheduleProxyRender(editStateRef.current);
   };
   const changeCrop = (nextCrop: CropState) => {
     editStateRef.current = { ...editStateRef.current, crop: nextCrop };
     setCrop(nextCrop);
     setRenderQuality('proxy');
-    if (selectedImageId !== null) {
-      void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
-    }
+    scheduleProxyRender(editStateRef.current);
   };
   const applyAutomaticAdjustment = (preset: AutoAdjustmentPreset) => {
     if (!sourceHistograms || selectedImageId === null) return;
@@ -860,7 +909,9 @@ function App() {
   }, [selectedImageId]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setRenderParams(editParams), renderQuality === 'proxy' ? 60 : 0);
+    const timer = window.setTimeout(() => setRenderParams((current) =>
+      JSON.stringify(current) === JSON.stringify(editParams) ? current : editParams),
+    renderQuality === 'proxy' ? 60 : 0);
     return () => window.clearTimeout(timer);
   }, [editParams, renderQuality]);
 
@@ -963,6 +1014,7 @@ function App() {
 
   useEffect(() => () => {
     if (generatedPreviewUrl.current) URL.revokeObjectURL(generatedPreviewUrl.current);
+    if (proxyRenderFrame.current !== null) window.cancelAnimationFrame(proxyRenderFrame.current);
   }, []);
 
   useEffect(() => {
@@ -984,6 +1036,8 @@ function App() {
   useEffect(() => {
     if (!selectedImage || !sharedPreviewReady) {
       setPreviewUrl(null);
+      setPreviewReady(false);
+      previewPixelsRef.current = null;
       setPreviewQuality(null);
       setPreviewSize({ width: 0, height: 0 });
       setHistograms(null);
@@ -1055,15 +1109,25 @@ function App() {
 
     const display = async (result: SharedPreviewResult) => {
       if (cancelled || result.requestId !== engineRequestId.current) return;
-      const url = await toUrl(result);
-      if (cancelled || result.requestId !== engineRequestId.current) {
-        URL.revokeObjectURL(url);
-        return;
+      let url: string | null = null;
+      if (controlTab === 'crop') {
+        url = await toUrl(result);
+        if (cancelled || result.requestId !== engineRequestId.current) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        if (generatedPreviewUrl.current) URL.revokeObjectURL(generatedPreviewUrl.current);
+        generatedPreviewUrl.current = url;
+        setPreviewUrl(url);
+      } else {
+        if (generatedPreviewUrl.current) URL.revokeObjectURL(generatedPreviewUrl.current);
+        generatedPreviewUrl.current = null;
+        setPreviewUrl(null);
+        previewPixelsRef.current = result;
+        setPreviewFrameVersion((version) => version + 1);
       }
-      if (generatedPreviewUrl.current) URL.revokeObjectURL(generatedPreviewUrl.current);
-      generatedPreviewUrl.current = url;
       setHistograms(calculateHistograms(result));
-      setPreviewUrl(url);
+      setPreviewReady(true);
       setPreviewQuality(result.quality);
       setPreviewSize({ width: result.width, height: result.height });
       setStatusMessage(result.quality === 'proxy' ? '미리보기' : '원본 보기');
@@ -1096,7 +1160,33 @@ function App() {
       cancelled = true;
       sharedPreviewRequests.current.delete(requestId);
     };
-  }, [selectedImage, previewRenderParams, viewportPixels, renderQuality, sharedPreviewReady]);
+  }, [selectedImage, previewRenderParams, viewportPixels, renderQuality, sharedPreviewReady, controlTab]);
+
+  useEffect(() => {
+    if (controlTab !== 'adjustments' || !previewReady) return;
+    const result = previewPixelsRef.current;
+    const canvas = previewCanvasRef.current;
+    if (!result || !canvas) return;
+    canvas.width = result.width;
+    canvas.height = result.height;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const rowBytes = result.width * 4;
+    const packed = result.stride === rowBytes
+      ? result.data
+      : new Uint8ClampedArray(result.width * result.height * 4);
+    if (result.stride !== rowBytes) {
+      for (let row = 0; row < result.height; row += 1) {
+        packed.set(result.data.subarray(row * result.stride, row * result.stride + rowBytes), row * rowBytes);
+      }
+    }
+    context.putImageData(new ImageData(packed, result.width, result.height), 0, 0);
+    sharedPreviewPort.current?.postMessage({
+      type: 'shared-preview-displayed',
+      imageId: selectedImage?.id,
+      quality: result.quality,
+    });
+  }, [previewFrameVersion, previewReady, controlTab, selectedImage]);
 
   const openImages = async () => {
     try {
@@ -1328,7 +1418,7 @@ function App() {
 
   const constrainedPan = (nextPan: { x: number; y: number }) => {
     const canvas = canvasRef.current;
-    const image = previewImageRef.current;
+    const image = previewCanvasRef.current ?? previewImageRef.current;
     if (!canvas || !image) return nextPan;
 
     const canvasRect = canvas.getBoundingClientRect();
@@ -1822,8 +1912,8 @@ function App() {
             onKeyDown={handleViewerKeyDown}
           >
             {selectedImage ? (
-              previewUrl
-                ? controlTab === 'crop' && cropStage
+              controlTab === 'crop'
+                ? previewUrl && cropStage
                   ? <div
                       className="crop-web-editor"
                       style={{ width: cropStage.width, height: cropStage.height }}
@@ -1848,26 +1938,21 @@ function App() {
                         onEditEnd={endEdit}
                       />
                     </div>
-                  : <div
+                  : <div className="loading">자르기용 이미지를 만드는 중입니다…</div>
+                : previewReady
+                  ? <div
                     className="image-transform"
                     style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` }}
                   >
-                    <img
-                      ref={previewImageRef}
-                      src={previewUrl}
-                      alt={selectedImage.name}
-                      draggable={false}
+                    <canvas
+                      ref={previewCanvasRef}
+                      className="preview-bitmap-canvas"
+                      role="img"
+                      aria-label={selectedImage.name}
                       style={fittedPreviewSize}
-                      onLoad={() => {
-                        if (previewQuality) sharedPreviewPort.current?.postMessage({
-                          type: 'shared-preview-displayed',
-                          imageId: selectedImage.id,
-                          quality: previewQuality,
-                        });
-                      }}
                     />
                   </div>
-                : <div className="loading">미리보기를 만드는 중입니다…</div>
+                  : <div className="loading">미리보기를 만드는 중입니다…</div>
             ) : selectedLibraryPath && loadingPaths.has(selectedLibraryPath) ? (
               <div className="empty-state loading-library-entry">
                 <span className="spinner" aria-hidden="true" />

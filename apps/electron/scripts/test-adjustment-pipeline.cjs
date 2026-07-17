@@ -76,5 +76,33 @@ const defringePixels = render({ defringe: 100 });
 if (Buffer.compare(Buffer.from(moirePixels), Buffer.from(defringePixels)) === 0) {
   throw new Error('Moire and defringe must use distinct processing algorithms');
 }
+const dependentCases = {
+  vignetteMidpoint: [{ vignette: 40, vignetteMidpoint: 50 }, { vignette: 40, vignetteMidpoint: 15 }],
+  vignetteRoundness: [{ vignette: 40, vignetteRoundness: 0 }, { vignette: 40, vignetteRoundness: 75 }],
+  vignetteFeather: [{ vignette: 40, vignetteFeather: 50 }, { vignette: 40, vignetteFeather: 10 }],
+  vignetteHighlights: [{ vignette: 40, vignetteHighlights: 0 }, { vignette: 40, vignetteHighlights: 80 }],
+  grainSize: [{ grain: 50, grainSize: 25 }, { grain: 50, grainSize: 80 }],
+  grainRoughness: [{ grain: 50, grainRoughness: 50 }, { grain: 50, grainRoughness: 90 }],
+  sharpeningRadius: [{ sharpening: 60, sharpeningRadius: 1 }, { sharpening: 60, sharpeningRadius: 2.5 }],
+  sharpeningDetail: [{ sharpening: 60, sharpeningDetail: 25 }, { sharpening: 60, sharpeningDetail: 90 }],
+  sharpeningMasking: [{ sharpening: 60, sharpeningMasking: 0 }, { sharpening: 60, sharpeningMasking: 80 }],
+  luminanceNoiseDetail: [{ luminanceNoise: 50, luminanceNoiseDetail: 50 }, { luminanceNoise: 50, luminanceNoiseDetail: 10 }],
+  luminanceNoiseContrast: [{ luminanceNoise: 50, luminanceNoiseContrast: 0 }, { luminanceNoise: 50, luminanceNoiseContrast: 80 }],
+  colorNoiseDetail: [{ colorNoise: 50, colorNoiseDetail: 50 }, { colorNoise: 50, colorNoiseDetail: 10 }],
+  colorNoiseSmoothness: [{ colorNoise: 50, colorNoiseSmoothness: 50 }, { colorNoise: 50, colorNoiseSmoothness: 90 }],
+  colorGradingBlending: [
+    { midtoneHue: 35, midtoneSaturation: 30, colorGradingBlending: 20 },
+    { midtoneHue: 35, midtoneSaturation: 30, colorGradingBlending: 90 },
+  ],
+  colorGradingBalance: [
+    { shadowHue: 220, shadowSaturation: 25, highlightHue: 50, highlightSaturation: 25, colorGradingBalance: -60 },
+    { shadowHue: 220, shadowSaturation: 25, highlightHue: 50, highlightSaturation: 25, colorGradingBalance: 60 },
+  ],
+};
+const inactiveDependent = Object.entries(dependentCases).filter(([, [before, after]]) =>
+  Buffer.compare(Buffer.from(render(before)), Buffer.from(render(after))) === 0);
+if (inactiveDependent.length) {
+  throw new Error(`Dependent adjustments did not change pixels: ${inactiveDependent.map(([name]) => name).join(', ')}`);
+}
 addon.closeImage(image.id);
 console.log(JSON.stringify(differences));

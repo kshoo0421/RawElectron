@@ -339,7 +339,20 @@ image_core::Status BasicProcessor::process(
   const double grain_roughness = positive_normalized(adjustment.grain_roughness);
   const double center_x = (output.size.width - 1) * 0.5;
   const double center_y = (output.size.height - 1) * 0.5;
+  const bool has_tone = highlights != 0.0 || shadows != 0.0 || whites != 0.0 || blacks != 0.0;
+  const bool has_white_balance = temperature != 0.0 || tint != 0.0;
+  const bool has_saturation = saturation != 0.0 || vibrance != 0.0;
+  const bool has_channel_mixer = red_hue != 0.0 || red_saturation != 0.0 ||
+      green_hue != 0.0 || green_saturation != 0.0 || blue_hue != 0.0 || blue_saturation != 0.0;
+  const bool has_grading = shadow_saturation != 0.0 || midtone_saturation != 0.0 ||
+      highlight_saturation != 0.0;
+  const bool has_curves = !adjustment.curve_rgb.empty() || !adjustment.curve_red.empty() ||
+      !adjustment.curve_green.empty() || !adjustment.curve_blue.empty();
+  const bool has_basic_pixel_adjustment = exposure != 1.0 || contrast != 0.0 || has_tone ||
+      has_white_balance || has_saturation || has_channel_mixer || has_grading || dehaze != 0.0 ||
+      vignette != 0.0 || grain != 0.0 || has_curves;
 
+  if (has_basic_pixel_adjustment) {
   for (std::size_t offset = 0; offset + 3 < output.pixels.size(); offset += 4) {
     double red = input.pixels[offset] / 255.0;
     double green = input.pixels[offset + 1] / 255.0;
@@ -352,41 +365,51 @@ image_core::Status BasicProcessor::process(
     green = (green - 0.5) * (1.0 + contrast) + 0.5;
     blue = (blue - 0.5) * (1.0 + contrast) + 0.5;
 
-    const double lightness = std::clamp(luminance(red, green, blue), 0.0, 1.0);
-    const double highlight_mask = smoothstep(0.45, 1.0, lightness);
-    const double shadow_mask = 1.0 - smoothstep(0.0, 0.55, lightness);
-    const double white_mask = smoothstep(0.72, 1.0, lightness);
-    const double black_mask = 1.0 - smoothstep(0.0, 0.28, lightness);
-    const double tone_delta = highlights * highlight_mask * 0.34 +
-        shadows * shadow_mask * 0.34 + whites * white_mask * 0.24 + blacks * black_mask * 0.24;
-    red += tone_delta;
-    green += tone_delta;
-    blue += tone_delta;
+    if (has_tone) {
+      const double lightness = std::clamp(luminance(red, green, blue), 0.0, 1.0);
+      const double highlight_mask = highlights == 0.0 ? 0.0 : smoothstep(0.45, 1.0, lightness);
+      const double shadow_mask = shadows == 0.0 ? 0.0 : 1.0 - smoothstep(0.0, 0.55, lightness);
+      const double white_mask = whites == 0.0 ? 0.0 : smoothstep(0.72, 1.0, lightness);
+      const double black_mask = blacks == 0.0 ? 0.0 : 1.0 - smoothstep(0.0, 0.28, lightness);
+      const double tone_delta = highlights * highlight_mask * 0.34 +
+          shadows * shadow_mask * 0.34 + whites * white_mask * 0.24 + blacks * black_mask * 0.24;
+      red += tone_delta;
+      green += tone_delta;
+      blue += tone_delta;
+    }
 
     // Approximate photographic temperature/tint adaptation in linear RGB.
-    red += temperature * 0.18 + tint * 0.055;
-    green -= tint * 0.12;
-    blue -= temperature * 0.18 - tint * 0.055;
+    if (has_white_balance) {
+      red += temperature * 0.18 + tint * 0.055;
+      green -= tint * 0.12;
+      blue -= temperature * 0.18 - tint * 0.055;
+    }
 
-    const double adjusted_luminance = luminance(red, green, blue);
-    const double chroma = std::max({red, green, blue}) - std::min({red, green, blue});
-    const double vibrance_gain = vibrance * (1.0 - std::clamp(chroma, 0.0, 1.0));
-    const double color_gain = std::max(0.0, 1.0 + saturation + vibrance_gain);
-    red = adjusted_luminance + (red - adjusted_luminance) * color_gain;
-    green = adjusted_luminance + (green - adjusted_luminance) * color_gain;
-    blue = adjusted_luminance + (blue - adjusted_luminance) * color_gain;
+    if (has_saturation) {
+      const double adjusted_luminance = luminance(red, green, blue);
+      const double chroma = std::max({red, green, blue}) - std::min({red, green, blue});
+      const double vibrance_gain = vibrance * (1.0 - std::clamp(chroma, 0.0, 1.0));
+      const double color_gain = std::max(0.0, 1.0 + saturation + vibrance_gain);
+      red = adjusted_luminance + (red - adjusted_luminance) * color_gain;
+      green = adjusted_luminance + (green - adjusted_luminance) * color_gain;
+      blue = adjusted_luminance + (blue - adjusted_luminance) * color_gain;
+    }
 
-    const double channel_total = std::max(1e-6, std::max(0.0, red) + std::max(0.0, green) + std::max(0.0, blue));
-    const double red_weight = std::max(0.0, red) / channel_total;
-    const double green_weight = std::max(0.0, green) / channel_total;
-    const double blue_weight = std::max(0.0, blue) / channel_total;
-    red += red_weight * red_hue * (blue - green) * 0.45;
-    green += green_weight * green_hue * (red - blue) * 0.45;
-    blue += blue_weight * blue_hue * (green - red) * 0.45;
-    red = adjusted_luminance + (red - adjusted_luminance) * (1.0 + red_saturation * red_weight);
-    green = adjusted_luminance + (green - adjusted_luminance) * (1.0 + green_saturation * green_weight);
-    blue = adjusted_luminance + (blue - adjusted_luminance) * (1.0 + blue_saturation * blue_weight);
+    if (has_channel_mixer) {
+      const double adjusted_luminance = luminance(red, green, blue);
+      const double channel_total = std::max(1e-6, std::max(0.0, red) + std::max(0.0, green) + std::max(0.0, blue));
+      const double red_weight = std::max(0.0, red) / channel_total;
+      const double green_weight = std::max(0.0, green) / channel_total;
+      const double blue_weight = std::max(0.0, blue) / channel_total;
+      red += red_weight * red_hue * (blue - green) * 0.45;
+      green += green_weight * green_hue * (red - blue) * 0.45;
+      blue += blue_weight * blue_hue * (green - red) * 0.45;
+      red = adjusted_luminance + (red - adjusted_luminance) * (1.0 + red_saturation * red_weight);
+      green = adjusted_luminance + (green - adjusted_luminance) * (1.0 + green_saturation * green_weight);
+      blue = adjusted_luminance + (blue - adjusted_luminance) * (1.0 + blue_saturation * blue_weight);
+    }
 
+    if (has_grading) {
     const double grade_luminance = std::clamp(luminance(red, green, blue), 0.0, 1.0);
     const double split = grading_balance * 0.18;
     const double shadow_weight = 1.0 - smoothstep(0.05 + split, 0.55 + split, grade_luminance);
@@ -405,14 +428,18 @@ image_core::Status BasicProcessor::process(
       green = green * (1.0 - std::min(0.45, grade_amount * 0.35)) + grade_channel(1) * grade_luminance * 0.35;
       blue = blue * (1.0 - std::min(0.45, grade_amount * 0.35)) + grade_channel(2) * grade_luminance * 0.35;
     }
+    }
 
     // Dehaze expands local black/white separation; unlike ordinary contrast it
     // also lowers the veiling-light floor for positive values.
-    red = (red - 0.45) * (1.0 + dehaze * 0.9) + 0.45 - dehaze * 0.035;
-    green = (green - 0.45) * (1.0 + dehaze * 0.9) + 0.45 - dehaze * 0.035;
-    blue = (blue - 0.45) * (1.0 + dehaze * 0.9) + 0.45 - dehaze * 0.035;
+    if (dehaze != 0.0) {
+      red = (red - 0.45) * (1.0 + dehaze * 0.9) + 0.45 - dehaze * 0.035;
+      green = (green - 0.45) * (1.0 + dehaze * 0.9) + 0.45 - dehaze * 0.035;
+      blue = (blue - 0.45) * (1.0 + dehaze * 0.9) + 0.45 - dehaze * 0.035;
+    }
 
     const std::size_t pixel = offset / 4;
+    if (vignette != 0.0) {
     const double x = static_cast<double>(pixel % output.size.width) - center_x;
     const double y = static_cast<double>(pixel / output.size.width) - center_y;
     const double normalized_x = std::abs(x) / std::max(1.0, center_x);
@@ -423,12 +450,14 @@ image_core::Status BasicProcessor::process(
         1.0 / round_power);
     const double vignette_start = 0.15 + vignette_midpoint * 0.65;
     const double vignette_end = std::min(1.0, vignette_start + 0.08 + vignette_feather * 0.55);
-    const double highlight_protection = 1.0 - vignette_highlights * smoothstep(0.55, 1.0, adjusted_luminance);
+    const double highlight_protection = 1.0 - vignette_highlights *
+        smoothstep(0.55, 1.0, luminance(red, green, blue));
     const double vignette_factor = 1.0 - vignette *
         smoothstep(vignette_start, vignette_end, radius) * 0.72 * highlight_protection;
     red *= vignette_factor;
     green *= vignette_factor;
     blue *= vignette_factor;
+    }
 
     if (grain > 0.0) {
       const auto grain_x = static_cast<std::uint32_t>((pixel % output.size.width) / grain_size);
@@ -441,13 +470,16 @@ image_core::Status BasicProcessor::process(
       blue += noise;
     }
 
-    red = apply_curve(adjustment.curve_red, apply_curve(adjustment.curve_rgb, red));
-    green = apply_curve(adjustment.curve_green, apply_curve(adjustment.curve_rgb, green));
-    blue = apply_curve(adjustment.curve_blue, apply_curve(adjustment.curve_rgb, blue));
+    if (has_curves) {
+      red = apply_curve(adjustment.curve_red, apply_curve(adjustment.curve_rgb, red));
+      green = apply_curve(adjustment.curve_green, apply_curve(adjustment.curve_rgb, green));
+      blue = apply_curve(adjustment.curve_blue, apply_curve(adjustment.curve_rgb, blue));
+    }
 
     output.pixels[offset] = static_cast<std::uint8_t>(std::clamp(red, 0.0, 1.0) * 255.0 + 0.5);
     output.pixels[offset + 1] = static_cast<std::uint8_t>(std::clamp(green, 0.0, 1.0) * 255.0 + 0.5);
     output.pixels[offset + 2] = static_cast<std::uint8_t>(std::clamp(blue, 0.0, 1.0) * 255.0 + 0.5);
+  }
   }
 
   apply_color_artifact_reduction(adjustment, output);
