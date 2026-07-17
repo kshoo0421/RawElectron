@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld('rawElectron', {
   openDroppedImages: (files: File[]) =>
     ipcRenderer.invoke('images:open-paths', files.map((file) => webUtils.getPathForFile(file))),
   closeImage: (imageId: number) => ipcRenderer.invoke('images:close', imageId),
+  loadLibrary: () => ipcRenderer.invoke('library:load'),
+  openLibraryEntry: (filePath: string) => ipcRenderer.invoke('library:open-entry', filePath),
+  saveLibrary: (state: unknown) => ipcRenderer.invoke('library:save', state),
   loadEditState: (imageId: number) => ipcRenderer.invoke('edit-state:load', imageId),
   saveEditState: (imageId: number, state: unknown) => ipcRenderer.invoke('edit-state:save', imageId, state),
   exportImage: (imageId: number, params: unknown, format: unknown) =>

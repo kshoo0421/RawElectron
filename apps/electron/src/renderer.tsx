@@ -49,10 +49,14 @@ const identityCrop: CropState = {
 type ImageFile = {
   id: number;
   name: string;
+  path: string;
   width: number;
   height: number;
   pixelFormat: 'rgba8';
 };
+
+type LibraryFolder = { id: string; name: string; parentId?: string | null };
+type LibraryEntry = { path: string; alias?: string; folderId?: string | null };
 
 type SharedPreviewResult = {
   type: 'shared-preview-ready';
@@ -78,6 +82,9 @@ declare global {
       openImages: () => Promise<ImageFile[]>;
       openDroppedImages: (files: File[]) => Promise<ImageFile[]>;
       closeImage: (imageId: number) => Promise<boolean>;
+      loadLibrary: () => Promise<{ folders: LibraryFolder[]; entries: LibraryEntry[] }>;
+      openLibraryEntry: (filePath: string) => Promise<ImageFile | null>;
+      saveLibrary: (state: { folders: LibraryFolder[]; entries: LibraryEntry[] }) => Promise<boolean>;
       loadEditState: (imageId: number) => Promise<PersistedEditState | null>;
       saveEditState: (imageId: number, state: PersistedEditState) => Promise<boolean>;
       exportImage: (
@@ -351,7 +358,33 @@ function deserializeEditState(stored: PersistedEditState | null): EditState {
 
 function App() {
   const [theme, setTheme] = useState<ThemeMode>('dark');
+  const [libraryWidth, setLibraryWidth] = useState(220);
+  const [controlsWidth, setControlsWidth] = useState(330);
+  const [resizingPanel, setResizingPanel] = useState<'library' | 'controls' | null>(null);
   const [images, setImages] = useState<ImageFile[]>([]);
+  const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>([]);
+  const [libraryEntries, setLibraryEntries] = useState<LibraryEntry[]>([]);
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [selectedLibraryPath, setSelectedLibraryPath] = useState<string | null>(null);
+  const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
+  const [failedPaths, setFailedPaths] = useState<Set<string>>(new Set());
+  const [draggedLibraryPath, setDraggedLibraryPath] = useState<string | null>(null);
+  const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
+  const [folderDropTarget, setFolderDropTarget] = useState<string | null>(null);
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [lastSelectedFolderId, setLastSelectedFolderId] = useState<string | null>(null);
+  const [nameDialog, setNameDialog] = useState<{
+    title: string;
+    value: string;
+    description?: string;
+    onSubmit: (value: string) => void;
+  } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
+  const libraryLoaded = useRef(false);
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewQuality, setPreviewQuality] = useState<'proxy' | 'original' | null>(null);
@@ -370,7 +403,9 @@ function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState<{ path: string } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [contextMenu, setContextMenu] = useState<{ imageId: number; x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    kind: 'image' | 'folder'; id: number | string; x: number; y: number;
+  } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -515,6 +550,56 @@ function App() {
   };
 
   useEffect(() => {
+    let active = true;
+    void window.rawElectron.loadLibrary().then((library) => {
+      if (!active) return;
+      setLibraryFolders(library.folders);
+      setLibraryEntries(library.entries);
+      setSelectedLibraryPath(library.entries[0]?.path ?? null);
+      setLoadingPaths(new Set(library.entries.map((entry) => entry.path)));
+      libraryLoaded.current = true;
+      if (library.entries.length) setStatusMessage(`${library.entries.length}개 파일 목록을 복원했습니다. 이미지를 불러오는 중입니다.`);
+      void (async () => {
+        for (const entry of library.entries) {
+          if (!active) return;
+          try {
+            const image = await window.rawElectron.openLibraryEntry(entry.path);
+            if (!active || !image) throw new Error('파일을 열 수 없습니다.');
+            setImages((current) => current.some((item) => item.path === image.path) ? current : [...current, image]);
+          } catch {
+            if (active) setFailedPaths((current) => new Set(current).add(entry.path));
+          } finally {
+            if (active) setLoadingPaths((current) => {
+              const next = new Set(current);
+              next.delete(entry.path);
+              return next;
+            });
+          }
+        }
+        if (active) setStatusMessage('저장된 파일 목록을 불러왔습니다.');
+      })();
+    }).catch((error) => {
+      libraryLoaded.current = true;
+      setStatusMessage(`파일 목록 복원 실패: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!libraryLoaded.current) return;
+    const timer = window.setTimeout(() => {
+      void window.rawElectron.saveLibrary({ folders: libraryFolders, entries: libraryEntries });
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [libraryFolders, libraryEntries]);
+
+  useEffect(() => {
+    if (!selectedLibraryPath) return;
+    const loaded = images.find((image) => image.path === selectedLibraryPath);
+    if (loaded && loaded.id !== selectedImageId) setSelectedImageId(loaded.id);
+  }, [images, selectedLibraryPath, selectedImageId]);
+
+  useEffect(() => {
     const requestId = ++editLoadRequest.current;
     undoStack.current = [];
     redoStack.current = [];
@@ -594,11 +679,18 @@ function App() {
         }
         return;
       }
-      if (event.key !== 'Delete' || selectedImageId === null || isExporting) return;
+      if (event.key === 'F2' && selectedLibraryPath !== null) {
+        event.preventDefault();
+        renameLibraryEntry(selectedLibraryPath);
+        return;
+      }
+      if (event.key !== 'Delete' || isExporting) return;
       const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return;
+      if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLButtonElement) return;
+      if (!selectedFolderId && !selectedLibraryPath) return;
       event.preventDefault();
-      void removeImage(selectedImageId);
+      if (selectedFolderId) requestRemoveFolder(selectedFolderId);
+      else if (selectedLibraryPath) requestRemoveLibraryEntry(selectedLibraryPath);
     };
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.code === 'Space') {
@@ -770,31 +862,52 @@ function App() {
       const opened = await window.rawElectron.openImages();
       if (!opened.length) return;
       setImages((current) => {
-        const ids = new Set(current.map((image) => image.id));
-        return [...current, ...opened.filter((image) => !ids.has(image.id))];
+        const paths = new Set(current.map((image) => image.path));
+        return [...current, ...opened.filter((image) => !paths.has(image.path))];
+      });
+      setLibraryEntries((current) => {
+        const paths = new Set(current.map((entry) => entry.path));
+        return [...current, ...opened.filter((image) => !paths.has(image.path)).map((image) => ({ path: image.path }))];
       });
       setSelectedImageId(opened[0].id);
+      setSelectedLibraryPath(opened[0].path);
       setStatusMessage(`${opened.length}개 이미지를 열었습니다.`);
     } catch (error) {
       setStatusMessage(`파일 열기 실패: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  const addOpenedImages = (opened: ImageFile[]) => {
+  const addOpenedImages = (opened: ImageFile[], destinationFolderId?: string | null) => {
     if (!opened.length) return;
     setImages((current) => {
-      const ids = new Set(current.map((image) => image.id));
-      return [...current, ...opened.filter((image) => !ids.has(image.id))];
+      const paths = new Set(current.map((image) => image.path));
+      return [...current, ...opened.filter((image) => !paths.has(image.path))];
+    });
+    setLibraryEntries((current) => {
+      const paths = new Set(current.map((entry) => entry.path));
+      const updated = destinationFolderId === undefined
+        ? current
+        : current.map((entry) => opened.some((image) => image.path === entry.path)
+          ? { ...entry, folderId: destinationFolderId }
+          : entry);
+      return [
+        ...updated,
+        ...opened.filter((image) => !paths.has(image.path)).map((image) => ({
+          path: image.path,
+          folderId: destinationFolderId ?? null,
+        })),
+      ];
     });
     setSelectedImageId(opened[0].id);
+    setSelectedLibraryPath(opened[0].path);
     setStatusMessage(`${opened.length}개 이미지를 열었습니다.`);
   };
 
-  const openDroppedImages = async (files: File[]) => {
+  const openDroppedImages = async (files: File[], destinationFolderId: string | null = null) => {
     if (!files.length || isExporting) return;
     try {
       setStatusMessage('드롭한 이미지를 여는 중입니다…');
-      addOpenedImages(await window.rawElectron.openDroppedImages(files));
+      addOpenedImages(await window.rawElectron.openDroppedImages(files), destinationFolderId);
     } catch (error) {
       setStatusMessage(`드롭 파일 열기 실패: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -807,8 +920,11 @@ function App() {
       await window.rawElectron.closeImage(imageId);
       const remaining = images.filter((image) => image.id !== imageId);
       setImages(remaining);
+      setLibraryEntries((current) => current.filter((entry) => entry.path !== images[index].path));
       if (selectedImageId === imageId) {
-        setSelectedImageId(remaining[Math.min(index, remaining.length - 1)]?.id ?? null);
+        const nextImage = remaining[Math.min(index, remaining.length - 1)] ?? null;
+        setSelectedImageId(nextImage?.id ?? null);
+        setSelectedLibraryPath(nextImage?.path ?? null);
       }
       setContextMenu(null);
       setStatusMessage('이미지를 목록에서 제거했습니다. 원본 파일은 유지됩니다.');
@@ -817,19 +933,121 @@ function App() {
     }
   };
 
-  const dragOutput = async (imageId: number, event: React.DragEvent) => {
-    if (isExporting) {
-      event.preventDefault();
+  const renameLibraryEntry = (entryPath: string) => {
+    const entry = libraryEntries.find((item) => item.path === entryPath);
+    if (!entry) return;
+    const image = images.find((item) => item.path === entryPath);
+    const originalName = image?.name ?? entryPath.split(/[\\/]/).pop() ?? entryPath;
+    setNameDialog({
+      title: '이미지 별명 변경',
+      description: '비워두면 원래 파일명이 표시됩니다.',
+      value: entry.alias?.trim() || originalName,
+      onSubmit: (value) => setLibraryEntries((current) => current.map((entry) =>
+        entry.path === entryPath ? { ...entry, alias: value.trim() || undefined } : entry)),
+    });
+    setContextMenu(null);
+  };
+
+  const removeLibraryEntry = (entryPath: string) => {
+    const image = images.find((item) => item.path === entryPath);
+    if (image) {
+      void removeImage(image.id);
       return;
     }
-    event.dataTransfer.effectAllowed = 'copy';
-    setStatusMessage('드래그 출력 파일을 준비하는 중입니다…');
-    try {
-      await window.rawElectron.dragExportImage(imageId, editParams, exportFormat);
-      setStatusMessage(`${exportFormat.toUpperCase()} 파일을 드래그해 내보냈습니다.`);
-    } catch (error) {
-      setStatusMessage(`드래그 출력 실패: ${error instanceof Error ? error.message : String(error)}`);
+    setLibraryEntries((current) => current.filter((entry) => entry.path !== entryPath));
+    setLoadingPaths((current) => { const next = new Set(current); next.delete(entryPath); return next; });
+    setFailedPaths((current) => { const next = new Set(current); next.delete(entryPath); return next; });
+    if (selectedLibraryPath === entryPath) setSelectedLibraryPath(null);
+    setContextMenu(null);
+  };
+
+  const requestRemoveLibraryEntry = (entryPath: string) => {
+    const entry = libraryEntries.find((item) => item.path === entryPath);
+    const image = images.find((item) => item.path === entryPath);
+    const name = entry?.alias?.trim() || image?.name || entryPath.split(/[\\/]/).pop() || entryPath;
+    setConfirmDialog({
+      title: '사진을 목록에서 삭제할까요?',
+      message: `“${name}”을 목록에서 삭제합니다. 원본 파일은 삭제되지 않습니다.`,
+      onConfirm: () => removeLibraryEntry(entryPath),
+    });
+    setContextMenu(null);
+  };
+
+  const createFolder = (parentId: string | null = null) => {
+    setNameDialog({
+      title: '새 폴더 만들기',
+      value: '새 폴더',
+      onSubmit: (value) => {
+        const name = value.trim();
+        if (!name) return;
+        setLibraryFolders((current) => [...current, {
+          id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name,
+          parentId,
+        }]);
+      },
+    });
+  };
+
+  const renameFolder = (folderId: string) => {
+    const folder = libraryFolders.find((item) => item.id === folderId);
+    if (!folder) return;
+    setNameDialog({
+      title: '폴더 이름 변경',
+      value: folder.name,
+      onSubmit: (value) => {
+        const name = value.trim();
+        if (name) setLibraryFolders((current) => current.map((item) => item.id === folderId ? { ...item, name } : item));
+      },
+    });
+    setContextMenu(null);
+  };
+
+  const removeFolder = (folderId: string) => {
+    const removedFolder = libraryFolders.find((folder) => folder.id === folderId);
+    const nextParentId = removedFolder?.parentId ?? null;
+    setLibraryFolders((current) => current
+      .filter((folder) => folder.id !== folderId)
+      .map((folder) => folder.parentId === folderId ? { ...folder, parentId: nextParentId } : folder));
+    setLibraryEntries((current) => current.map((entry) =>
+      entry.folderId === folderId ? { ...entry, folderId: nextParentId } : entry));
+    setSelectedFolderId((current) => current === folderId ? null : current);
+    setLastSelectedFolderId((current) => current === folderId ? nextParentId : current);
+    setContextMenu(null);
+  };
+
+  const requestRemoveFolder = (folderId: string) => {
+    const folder = libraryFolders.find((item) => item.id === folderId);
+    if (!folder) return;
+    setConfirmDialog({
+      title: '폴더를 삭제할까요?',
+      message: `“${folder.name}” 폴더를 삭제합니다. 폴더 안의 사진과 하위 폴더는 한 단계 위로 이동합니다.`,
+      onConfirm: () => removeFolder(folderId),
+    });
+    setContextMenu(null);
+  };
+
+  const moveImageToFolder = (entryPath: string, folderId: string | null) => {
+    setLibraryEntries((current) => current.map((entry) =>
+      entry.path === entryPath ? { ...entry, folderId } : entry));
+    setContextMenu(null);
+  };
+
+  const moveFolderToFolder = (folderId: string, parentId: string | null) => {
+    if (folderId === parentId) return;
+    let ancestorId = parentId;
+    while (ancestorId) {
+      if (ancestorId === folderId) return;
+      ancestorId = libraryFolders.find((folder) => folder.id === ancestorId)?.parentId ?? null;
     }
+    setLibraryFolders((current) => current.map((folder) =>
+      folder.id === folderId ? { ...folder, parentId } : folder));
+    setCollapsedFolders((current) => {
+      const next = new Set(current);
+      if (parentId) next.delete(parentId);
+      return next;
+    });
+    setContextMenu(null);
   };
 
   const exportImage = async () => {
@@ -970,6 +1188,213 @@ function App() {
     }));
   };
 
+  const resizePanel = (panel: 'library' | 'controls', pointerX: number) => {
+    const workspace = document.querySelector<HTMLElement>('.workspace');
+    if (!workspace) return;
+    const rect = workspace.getBoundingClientRect();
+    const centerMinimum = 320;
+    if (panel === 'library') {
+      const maximum = Math.min(420, rect.width - controlsWidth - centerMinimum);
+      setLibraryWidth(Math.max(160, Math.min(maximum, pointerX - rect.left)));
+    } else {
+      const maximum = Math.min(520, rect.width - libraryWidth - centerMinimum);
+      setControlsWidth(Math.max(260, Math.min(maximum, rect.right - pointerX)));
+    }
+  };
+
+  const handleResizePointerDown = (
+    panel: 'library' | 'controls',
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setResizingPanel(panel);
+  };
+
+  const handleResizePointerMove = (
+    panel: 'library' | 'controls',
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (resizingPanel !== panel) return;
+    resizePanel(panel, event.clientX);
+  };
+
+  const handleResizePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setResizingPanel(null);
+  };
+
+  const handleResizeKeyDown = (
+    panel: 'library' | 'controls',
+    event: React.KeyboardEvent<HTMLDivElement>,
+  ) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const delta = (event.key === 'ArrowRight' ? 1 : -1) * (event.shiftKey ? 40 : 10);
+    if (panel === 'library') {
+      setLibraryWidth((width) => Math.max(160, Math.min(420, width + delta)));
+    } else {
+      setControlsWidth((width) => Math.max(260, Math.min(520, width - delta)));
+    }
+  };
+
+  const renderLibraryEntry = (entry: LibraryEntry) => {
+    const image = images.find((item) => item.path === entry.path);
+    const originalName = image?.name ?? entry.path.split(/[\\/]/).pop() ?? entry.path;
+    const isLoading = loadingPaths.has(entry.path);
+    const failed = failedPaths.has(entry.path);
+    return (
+      <button
+        key={entry.path}
+        className={`image-item ${entry.path === selectedLibraryPath ? 'selected' : ''}`}
+        draggable={Boolean(image)}
+        title={entry.path}
+        onClick={() => {
+          setSelectedFolderId(null);
+          setSelectedLibraryPath(entry.path);
+          setSelectedImageId(image?.id ?? null);
+        }}
+        onDragStart={(event) => {
+          if (!image) { event.preventDefault(); return; }
+          setSelectedImageId(image.id);
+          setSelectedLibraryPath(entry.path);
+          setDraggedLibraryPath(entry.path);
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('application/x-rawelectron-library-path', entry.path);
+          event.dataTransfer.setData('text/plain', entry.path);
+        }}
+        onDragEnd={() => {
+          setDraggedLibraryPath(null);
+          setFolderDropTarget(null);
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setSelectedFolderId(null);
+          setSelectedImageId(image?.id ?? null);
+          setSelectedLibraryPath(entry.path);
+          setContextMenu({ kind: 'image', id: entry.path, x: event.clientX, y: event.clientY });
+        }}
+      >
+        <span
+          className={`image-status ${isLoading ? 'loading' : failed ? 'failed' : 'loaded'}`}
+          title={isLoading ? '불러오는 중' : failed ? '불러오기 실패' : '로딩 완료'}
+          aria-label={isLoading ? '불러오는 중' : failed ? '불러오기 실패' : '로딩 완료'}
+        >
+          {isLoading ? '…' : failed ? '×' : '✓'}
+        </span>
+        <span className="image-name">{entry.alias?.trim() || originalName}</span>
+      </button>
+    );
+  };
+
+  const renderLibraryFolder = (folder: LibraryFolder, depth = 0): React.ReactNode => {
+    const folderEntries = libraryEntries.filter((entry) => entry.folderId === folder.id);
+    const childFolders = libraryFolders.filter((item) => item.parentId === folder.id);
+    const collapsed = collapsedFolders.has(folder.id);
+    return (
+      <section
+        className={`library-folder ${folderDropTarget === folder.id ? 'drop-target' : ''}`}
+        key={folder.id}
+        data-depth={depth}
+        onDragEnter={(event) => {
+          const hasExternalFiles = event.dataTransfer.types.includes('Files');
+          if (!draggedLibraryPath && !draggedFolderId && !hasExternalFiles) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setFolderDropTarget(folder.id);
+        }}
+        onDragOver={(event) => {
+          const hasExternalFiles = event.dataTransfer.types.includes('Files');
+          if (!draggedLibraryPath && !draggedFolderId && !hasExternalFiles) return;
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = hasExternalFiles ? 'copy' : 'move';
+        }}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+          setFolderDropTarget((current) => current === folder.id ? null : current);
+        }}
+        onDrop={(event) => {
+          if (event.dataTransfer.files.length) {
+            event.preventDefault();
+            event.stopPropagation();
+            setIsDragOver(false);
+            setFolderDropTarget(null);
+            setLastSelectedFolderId(folder.id);
+            void openDroppedImages(Array.from(event.dataTransfer.files), folder.id);
+            return;
+          }
+          if (draggedFolderId) {
+            event.preventDefault();
+            event.stopPropagation();
+            moveFolderToFolder(draggedFolderId, folder.id);
+            setDraggedFolderId(null);
+            setFolderDropTarget(null);
+            return;
+          }
+          const entryPath = draggedLibraryPath ||
+            event.dataTransfer.getData('application/x-rawelectron-library-path');
+          if (!entryPath) return;
+          event.preventDefault();
+          event.stopPropagation();
+          moveImageToFolder(entryPath, folder.id);
+          setLastSelectedFolderId(folder.id);
+          setDraggedLibraryPath(null);
+          setFolderDropTarget(null);
+        }}
+      >
+        <button
+          className={`folder-heading ${selectedFolderId === folder.id ? 'selected' : ''}`}
+          draggable
+          onClick={() => {
+            setSelectedFolderId(folder.id);
+            setLastSelectedFolderId(folder.id);
+            setSelectedLibraryPath(null);
+            setSelectedImageId(null);
+            setCollapsedFolders((current) => {
+            const next = new Set(current);
+            if (next.has(folder.id)) next.delete(folder.id); else next.add(folder.id);
+            return next;
+            });
+          }}
+          onDragStart={(event) => {
+            event.stopPropagation();
+            setDraggedFolderId(folder.id);
+            setDraggedLibraryPath(null);
+            setSelectedFolderId(folder.id);
+            setLastSelectedFolderId(folder.id);
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('application/x-rawelectron-folder-id', folder.id);
+          }}
+          onDragEnd={() => {
+            setDraggedFolderId(null);
+            setFolderDropTarget(null);
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setSelectedFolderId(folder.id);
+            setLastSelectedFolderId(folder.id);
+            setSelectedLibraryPath(null);
+            setSelectedImageId(null);
+            setContextMenu({ kind: 'folder', id: folder.id, x: event.clientX, y: event.clientY });
+          }}
+        >
+          <span>{collapsed ? '▸' : '▾'} 📁 {folder.name}</span>
+          <small>{folderEntries.length + childFolders.length}</small>
+        </button>
+        {!collapsed && (
+          <div className="folder-children">
+            {folderEntries.map(renderLibraryEntry)}
+            {childFolders.map((child) => renderLibraryFolder(child, depth + 1))}
+          </div>
+        )}
+      </section>
+    );
+  };
+
   return (
     <div
       className="raw-app"
@@ -1049,38 +1474,60 @@ function App() {
         </div>
       </header>
 
-      <main className="workspace">
+      <main
+        className={`workspace ${resizingPanel ? 'is-resizing' : ''}`}
+        style={{ gridTemplateColumns: `${libraryWidth}px minmax(0, 1fr) ${controlsWidth}px` }}
+      >
         <aside className="library">
           <div className="pane-heading">
-            <strong>열린 이미지</strong>
-            <button onClick={openImages}>추가</button>
+            <strong>파일 목록</strong>
+            <div className="pane-actions">
+              <button onClick={() => createFolder()}>+ 폴더</button>
+              <button onClick={openImages}>+ 파일</button>
+            </div>
           </div>
           <div className="image-list">
-            {!images.length && <p className="empty-note">열린 이미지가 없습니다.</p>}
-            {images.map((image) => (
-              <button
-                key={image.id}
-                className={`image-item ${image.id === selectedImageId ? 'selected' : ''}`}
-                draggable
-                onClick={() => setSelectedImageId(image.id)}
-                onDragStart={(event) => {
-                  setSelectedImageId(image.id);
-                  void dragOutput(image.id, event);
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  setSelectedImageId(image.id);
-                  setContextMenu({ imageId: image.id, x: event.clientX, y: event.clientY });
-                }}
-              >
-                <span className="image-name">{image.name}</span>
-                <span>{image.width} × {image.height}</span>
-              </button>
-            ))}
+            {!libraryEntries.length && !libraryFolders.length && <p className="empty-note">파일과 폴더가 없습니다.</p>}
+            {libraryEntries.filter((entry) => !entry.folderId).map(renderLibraryEntry)}
+            {libraryFolders.filter((folder) => !folder.parentId).map((folder) => renderLibraryFolder(folder))}
           </div>
         </aside>
 
-        <section className={`viewer ${showHistograms && controlTab !== 'crop' ? '' : 'histogram-hidden'}`}>
+        <div
+          className="panel-resizer library-resizer"
+          role="separator"
+          aria-label="파일 목록 패널 너비 조절"
+          aria-orientation="vertical"
+          aria-valuemin={160}
+          aria-valuemax={420}
+          aria-valuenow={Math.round(libraryWidth)}
+          tabIndex={0}
+          style={{ left: libraryWidth }}
+          onPointerDown={(event) => handleResizePointerDown('library', event)}
+          onPointerMove={(event) => handleResizePointerMove('library', event)}
+          onPointerUp={handleResizePointerUp}
+          onPointerCancel={handleResizePointerUp}
+          onKeyDown={(event) => handleResizeKeyDown('library', event)}
+          onDoubleClick={() => setLibraryWidth(220)}
+        />
+
+        <section
+          className={`viewer ${showHistograms && controlTab !== 'crop' ? '' : 'histogram-hidden'}`}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes('Files')) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = 'copy';
+            setIsDragOver(true);
+          }}
+          onDrop={(event) => {
+            if (!event.dataTransfer.files.length) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setIsDragOver(false);
+            void openDroppedImages(Array.from(event.dataTransfer.files), lastSelectedFolderId);
+          }}
+        >
           <div
             className={`canvas ${isSpacePressed ? 'pan-ready' : ''} ${isPanning ? 'panning' : ''}`}
             ref={canvasRef}
@@ -1140,6 +1587,17 @@ function App() {
                     />
                   </div>
                 : <div className="loading">미리보기를 만드는 중입니다…</div>
+            ) : selectedLibraryPath && loadingPaths.has(selectedLibraryPath) ? (
+              <div className="empty-state loading-library-entry">
+                <span className="spinner" aria-hidden="true" />
+                <h1>이미지를 불러오는 중입니다</h1>
+                <p>{selectedLibraryPath.split(/[\\/]/).pop()}</p>
+              </div>
+            ) : selectedLibraryPath && failedPaths.has(selectedLibraryPath) ? (
+              <div className="empty-state">
+                <h1>이미지를 불러오지 못했습니다</h1>
+                <p>원본 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.</p>
+              </div>
             ) : (
               <div className="empty-state">
                 <h1>편집할 이미지를 여세요</h1>
@@ -1197,6 +1655,24 @@ function App() {
             </button>
           </footer>
         </section>
+
+        <div
+          className="panel-resizer controls-resizer"
+          role="separator"
+          aria-label="옵션 패널 너비 조절"
+          aria-orientation="vertical"
+          aria-valuemin={260}
+          aria-valuemax={520}
+          aria-valuenow={Math.round(controlsWidth)}
+          tabIndex={0}
+          style={{ right: controlsWidth }}
+          onPointerDown={(event) => handleResizePointerDown('controls', event)}
+          onPointerMove={(event) => handleResizePointerMove('controls', event)}
+          onPointerUp={handleResizePointerUp}
+          onPointerCancel={handleResizePointerUp}
+          onKeyDown={(event) => handleResizeKeyDown('controls', event)}
+          onDoubleClick={() => setControlsWidth(330)}
+        />
 
         <aside className="controls">
           <div className="controls-heading control-tabs">
@@ -1262,8 +1738,90 @@ function App() {
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
-          <button onClick={() => void removeImage(contextMenu.imageId)}>목록에서 제거</button>
-          <span>Delete 키로도 제거할 수 있습니다.</span>
+          {contextMenu.kind === 'image' ? <>
+            <button onClick={() => renameLibraryEntry(contextMenu.id as string)}>별명 변경 (F2)</button>
+            <div className="context-menu-label">폴더로 이동</div>
+            <button onClick={() => moveImageToFolder(contextMenu.id as string, null)}>폴더 없음</button>
+            {libraryFolders.map((folder) => (
+              <button key={folder.id} onClick={() => moveImageToFolder(contextMenu.id as string, folder.id)}>
+                {folder.name}
+              </button>
+            ))}
+            <div className="context-menu-separator" />
+            <button onClick={() => requestRemoveLibraryEntry(contextMenu.id as string)}>목록에서 삭제</button>
+          </> : <>
+            <button onClick={() => createFolder(contextMenu.id as string)}>하위 폴더 만들기</button>
+            <button onClick={() => renameFolder(contextMenu.id as string)}>폴더 이름 변경</button>
+            <button onClick={() => requestRemoveFolder(contextMenu.id as string)}>폴더 삭제</button>
+            <span>내부 항목은 한 단계 위 폴더로 이동합니다.</span>
+          </>}
+        </div>
+      )}
+      {nameDialog && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="name-dialog-title">
+          <form
+            className="name-dialog"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const form = new FormData(event.currentTarget);
+              nameDialog.onSubmit(String(form.get('name') ?? ''));
+              setNameDialog(null);
+            }}
+          >
+            <h2 id="name-dialog-title">{nameDialog.title}</h2>
+            {nameDialog.description && <p>{nameDialog.description}</p>}
+            <input name="name" defaultValue={nameDialog.value} autoFocus onFocus={(event) => event.currentTarget.select()} />
+            <div className="dialog-actions">
+              <button type="button" className="button quiet" onClick={() => setNameDialog(null)}>취소</button>
+              <button type="submit" className="button primary">확인</button>
+            </div>
+          </form>
+        </div>
+      )}
+      {confirmDialog && (
+        <div
+          className="modal-backdrop"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="confirm-dialog-title"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              setConfirmDialog(null);
+              return;
+            }
+            const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button'));
+            if (!buttons.length) return;
+            const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+              event.preventDefault();
+              const direction = event.key === 'ArrowRight' ? 1 : -1;
+              buttons[(currentIndex + direction + buttons.length) % buttons.length].focus();
+            } else if (event.key === 'Tab') {
+              const nextIndex = event.shiftKey ? currentIndex - 1 : currentIndex + 1;
+              if (nextIndex < 0 || nextIndex >= buttons.length) {
+                event.preventDefault();
+                buttons[event.shiftKey ? buttons.length - 1 : 0].focus();
+              }
+            }
+          }}
+        >
+          <div className="confirm-dialog">
+            <h2 id="confirm-dialog-title">{confirmDialog.title}</h2>
+            <p>{confirmDialog.message}</p>
+            <div className="dialog-actions">
+              <button className="button quiet" autoFocus onClick={() => setConfirmDialog(null)}>취소</button>
+              <button
+                className="button danger"
+                onClick={() => {
+                  confirmDialog.onConfirm();
+                  setConfirmDialog(null);
+                }}
+              >
+                삭제
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {isExporting && (

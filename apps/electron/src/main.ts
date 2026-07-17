@@ -43,8 +43,10 @@ if (started) {
 const engineWorker = new EngineWorker();
 const previewRoot = path.join(app.getPath('temp'), 'RawElectron', 'preview');
 const editStatePath = path.join(app.getPath('userData'), 'edit-states.json');
+const libraryStatePath = path.join(app.getPath('userData'), 'library-state.json');
 const debugLogs: DebugLogEntry[] = [];
 const imagePaths = new Map<number, string>();
+const openImagesByPath = new Map<string, ImageFile>();
 const initialPreviewLogged = new Set<number>();
 let nextDebugLogId = 1;
 
@@ -78,12 +80,39 @@ ipcMain.on('debug-logs:report-info', (_event, payload: { source?: unknown; messa
 type ImageFile = {
   id: number;
   name: string;
+  path: string;
   width: number;
   height: number;
   pixelFormat: 'rgba8';
 };
 
 type StoredEditStates = Record<string, unknown>;
+type LibraryFolder = { id: string; name: string; parentId?: string | null };
+type LibraryEntry = { path: string; alias?: string; folderId?: string | null };
+type LibraryState = { folders: LibraryFolder[]; entries: LibraryEntry[] };
+
+function readLibraryState(): LibraryState {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(libraryStatePath, 'utf8')) as Partial<LibraryState>;
+    return {
+      folders: Array.isArray(parsed.folders)
+        ? parsed.folders.filter((item): item is LibraryFolder =>
+          typeof item?.id === 'string' && typeof item?.name === 'string').slice(0, 200)
+        : [],
+      entries: Array.isArray(parsed.entries)
+        ? parsed.entries.filter((item): item is LibraryEntry =>
+          typeof item?.path === 'string').slice(0, 5000)
+        : [],
+    };
+  } catch {
+    return { folders: [], entries: [] };
+  }
+}
+
+function writeLibraryState(state: LibraryState) {
+  fs.mkdirSync(path.dirname(libraryStatePath), { recursive: true });
+  fs.writeFileSync(libraryStatePath, JSON.stringify(state, null, 2), 'utf8');
+}
 
 function readEditStates(): StoredEditStates {
   try {
@@ -139,16 +168,23 @@ function outputPathForFormat(filePath: string, format: ExportFormat) {
 }
 
 async function toImageFile(filePath: string): Promise<ImageFile> {
-  const opened = await engineWorker.openImage(filePath);
-  imagePaths.set(opened.id, path.resolve(filePath));
+  const resolvedPath = path.resolve(filePath);
+  const pathKey = resolvedPath.toLocaleLowerCase('en-US');
+  const existing = openImagesByPath.get(pathKey);
+  if (existing) return existing;
+  const opened = await engineWorker.openImage(resolvedPath);
+  imagePaths.set(opened.id, resolvedPath);
 
-  return {
+  const image = {
     id: opened.id,
     name: path.basename(filePath),
+    path: resolvedPath,
     width: opened.width,
     height: opened.height,
     pixelFormat: opened.pixelFormat,
   };
+  openImagesByPath.set(pathKey, image);
+  return image;
 }
 
 async function openImagePaths(filePaths: string[]) {
@@ -187,10 +223,43 @@ ipcMain.handle('images:open-paths', async (_event, filePaths: unknown): Promise<
   return openImagePaths(filePaths);
 });
 
+ipcMain.handle('library:load', async () => {
+  const state = readLibraryState();
+  const existingEntries = state.entries.filter((entry) => fs.existsSync(entry.path));
+  if (existingEntries.length !== state.entries.length) {
+    writeLibraryState({ ...state, entries: existingEntries });
+  }
+  return { folders: state.folders, entries: existingEntries };
+});
+
+ipcMain.handle('library:open-entry', async (_event, filePath: unknown) => {
+  if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) return null;
+  return toImageFile(filePath);
+});
+
+ipcMain.handle('library:save', (_event, value: unknown) => {
+  const serialized = JSON.stringify(value);
+  if (serialized.length > 1_000_000) throw new Error('Library state is too large');
+  const parsed = JSON.parse(serialized) as Partial<LibraryState>;
+  const state: LibraryState = {
+    folders: Array.isArray(parsed.folders)
+      ? parsed.folders.filter((item): item is LibraryFolder =>
+        typeof item?.id === 'string' && typeof item?.name === 'string').slice(0, 200)
+      : [],
+    entries: Array.isArray(parsed.entries)
+      ? parsed.entries.filter((item): item is LibraryEntry => typeof item?.path === 'string').slice(0, 5000)
+      : [],
+  };
+  writeLibraryState(state);
+  return true;
+});
+
 ipcMain.handle('images:close', async (_event, imageId: number) => {
   if (!Number.isSafeInteger(imageId) || imageId <= 0) throw new Error('Invalid image id');
   await engineWorker.closeImage(imageId);
+  const closedPath = imagePaths.get(imageId);
   imagePaths.delete(imageId);
+  if (closedPath) openImagesByPath.delete(closedPath.toLocaleLowerCase('en-US'));
   debugLog('debug', '파일', `이미지 #${imageId}를 목록에서 닫았습니다.`);
   return true;
 });
