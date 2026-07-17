@@ -543,6 +543,7 @@ function App() {
   const [crop, setCrop] = useState<CropState>(identityCrop);
   const [controlTab, setControlTab] = useState<'adjustments' | 'crop'>('adjustments');
   const [renderQuality, setRenderQuality] = useState<'proxy' | 'original'>('original');
+  const [isInteractiveEdit, setIsInteractiveEdit] = useState(false);
   const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
   const [showHistograms, setShowHistograms] = useState(true);
@@ -561,6 +562,7 @@ function App() {
   const previewImageRef = useRef<HTMLImageElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const previewPixelsRef = useRef<SharedPreviewResult | null>(null);
+  const displayedPreviewImageId = useRef<number | null>(null);
   const panStart = useRef({ pointerX: 0, pointerY: 0, panX: 0, panY: 0 });
   const engineRequestId = useRef(0);
   const generatedPreviewUrl = useRef<string | null>(null);
@@ -669,8 +671,10 @@ function App() {
   };
   const beginEdit = () => {
     if (!transactionStart.current) transactionStart.current = cloneEditState(editStateRef.current);
+    setIsInteractiveEdit(true);
   };
   const endEdit = () => {
+    setIsInteractiveEdit(false);
     const start = transactionStart.current;
     transactionStart.current = null;
     if (start && JSON.stringify(start) !== JSON.stringify(editStateRef.current)) pushUndo(start);
@@ -1038,6 +1042,7 @@ function App() {
       setPreviewUrl(null);
       setPreviewReady(false);
       previewPixelsRef.current = null;
+      displayedPreviewImageId.current = null;
       setPreviewQuality(null);
       setPreviewSize({ width: 0, height: 0 });
       setHistograms(null);
@@ -1047,11 +1052,23 @@ function App() {
 
     let cancelled = false;
     const requestId = ++engineRequestId.current;
+    const isInitialImagePreview = displayedPreviewImageId.current !== selectedImage.id;
     setPreviewQuality(null);
     setStatusMessage('로딩 중');
     setSourceHistograms(sourceHistogramCache.current.get(selectedImage.id) ?? null);
-    const previewWidth = Math.max(1, Math.min(selectedImage.width, viewportPixels.width));
-    const previewHeight = Math.max(1, Math.min(selectedImage.height, viewportPixels.height));
+    // During direct manipulation, halve both dimensions to render one quarter
+    // of the viewport pixels. Releasing the control restores the final quality.
+    const reducedPreview = controlTab === 'adjustments' &&
+      (isInteractiveEdit || isInitialImagePreview);
+    const interactiveScale = reducedPreview ? 0.5 : 1;
+    const previewWidth = Math.max(1, Math.min(
+      selectedImage.width,
+      Math.round(viewportPixels.width * interactiveScale),
+    ));
+    const previewHeight = Math.max(1, Math.min(
+      selectedImage.height,
+      Math.round(viewportPixels.height * interactiveScale),
+    ));
     const geometry = previewRenderParams.crop;
     const turns = ((geometry.quarterTurns % 4) + 4) % 4;
     const baseWidth = turns % 2 === 0 ? selectedImage.width : selectedImage.height;
@@ -1132,11 +1149,13 @@ function App() {
       setPreviewReady(true);
       setPreviewQuality(result.quality);
       setPreviewSize({ width: result.width, height: result.height });
+      displayedPreviewImageId.current = selectedImage.id;
       setStatusMessage(result.quality === 'proxy' ? '미리보기' : '원본 보기');
     };
 
     void (async () => {
       try {
+        await display(await renderShared('proxy'));
         let sourceHistogram = sourceHistogramCache.current.get(selectedImage.id);
         if (!sourceHistogram) {
           const neutralParams = buildEditParams(editSections, identityCurves, identityCrop);
@@ -1144,7 +1163,6 @@ function App() {
           sourceHistogramCache.current.set(selectedImage.id, sourceHistogram);
         }
         if (!cancelled) setSourceHistograms(sourceHistogram);
-        await display(await renderShared('proxy'));
         if (renderQuality === 'original') {
           await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
           if (!cancelled) await display(await renderShared('original'));
@@ -1162,7 +1180,7 @@ function App() {
       cancelled = true;
       sharedPreviewRequests.current.delete(requestId);
     };
-  }, [selectedImage, previewRenderParams, viewportPixels, renderQuality, sharedPreviewReady, controlTab]);
+  }, [selectedImage, previewRenderParams, viewportPixels, renderQuality, sharedPreviewReady, controlTab, isInteractiveEdit]);
 
   useEffect(() => {
     if (controlTab !== 'adjustments' || !previewReady) return;
