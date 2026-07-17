@@ -122,6 +122,87 @@ void apply_spatial_detail(
   }
 }
 
+void apply_color_artifact_reduction(
+    const image_core::Adjustment& adjustment,
+    image_core::Bitmap& bitmap) {
+  const double moire = positive_normalized(adjustment.moire);
+  const double defringe = positive_normalized(adjustment.defringe);
+  if (moire == 0.0 && defringe == 0.0) return;
+
+  cv::Mat rgba(
+      static_cast<int>(bitmap.size.height),
+      static_cast<int>(bitmap.size.width),
+      CV_8UC4,
+      bitmap.pixels.data());
+  cv::Mat alpha;
+  cv::extractChannel(rgba, alpha, 3);
+  cv::Mat rgb;
+  cv::cvtColor(rgba, rgb, cv::COLOR_RGBA2RGB);
+
+  if (moire > 0.0) {
+    // Moire is primarily a rapidly oscillating chroma artifact. Smooth only
+    // the chroma planes so fine luminance detail remains intact.
+    cv::Mat ycrcb;
+    cv::cvtColor(rgb, ycrcb, cv::COLOR_RGB2YCrCb);
+    std::vector<cv::Mat> planes;
+    cv::split(ycrcb, planes);
+    const double sigma = 0.8 + moire * 2.4;
+    for (int channel = 1; channel <= 2; ++channel) {
+      cv::Mat smoothed;
+      cv::GaussianBlur(planes[channel], smoothed, cv::Size(0, 0), sigma);
+      cv::addWeighted(
+          planes[channel], 1.0 - moire * 0.82,
+          smoothed, moire * 0.82,
+          0.0, planes[channel]);
+    }
+    cv::merge(planes, ycrcb);
+    cv::cvtColor(ycrcb, rgb, cv::COLOR_YCrCb2RGB);
+  }
+
+  if (defringe > 0.0) {
+    // Defringe only targets strongly purple/magenta or green pixels near an
+    // edge. Neutral areas and ordinary saturated colours are left alone.
+    cv::Mat blurred;
+    cv::GaussianBlur(rgb, blurred, cv::Size(0, 0), 1.2);
+    for (int y = 0; y < rgb.rows; ++y) {
+      auto* row = rgb.ptr<cv::Vec3b>(y);
+      const auto* nearby = blurred.ptr<cv::Vec3b>(y);
+      for (int x = 0; x < rgb.cols; ++x) {
+        const double red = row[x][0] / 255.0;
+        const double green = row[x][1] / 255.0;
+        const double blue = row[x][2] / 255.0;
+        const double local_red = nearby[x][0] / 255.0;
+        const double local_green = nearby[x][1] / 255.0;
+        const double local_blue = nearby[x][2] / 255.0;
+        const double chroma = std::max({red, green, blue}) - std::min({red, green, blue});
+        const double purple_excess = (red + blue) * 0.5 - green;
+        const double green_excess = green - (red + blue) * 0.5;
+        const double fringe_colour = std::max(purple_excess, green_excess);
+        const double edge_delta = std::max({
+            std::abs(red - local_red),
+            std::abs(green - local_green),
+            std::abs(blue - local_blue),
+        });
+        const double mask = defringe *
+            smoothstep(0.04, 0.22, fringe_colour) *
+            smoothstep(0.06, 0.35, chroma) *
+            smoothstep(0.015, 0.16, edge_delta);
+        if (mask <= 0.0) continue;
+        const double local_luminance = luminance(local_red, local_green, local_blue);
+        row[x][0] = cv::saturate_cast<std::uint8_t>(
+            (red * (1.0 - mask) + local_luminance * mask) * 255.0);
+        row[x][1] = cv::saturate_cast<std::uint8_t>(
+            (green * (1.0 - mask) + local_luminance * mask) * 255.0);
+        row[x][2] = cv::saturate_cast<std::uint8_t>(
+            (blue * (1.0 - mask) + local_luminance * mask) * 255.0);
+      }
+    }
+  }
+
+  cv::cvtColor(rgb, rgba, cv::COLOR_RGB2RGBA);
+  cv::insertChannel(alpha, rgba, 3);
+}
+
 }  // namespace
 
 image_core::Status BasicProcessor::process(
@@ -151,8 +232,6 @@ image_core::Status BasicProcessor::process(
   const double dehaze = normalized(adjustment.dehaze);
   const double vignette = normalized(adjustment.vignette);
   const double grain = positive_normalized(adjustment.grain);
-  const double artifact_reduction =
-      (positive_normalized(adjustment.moire) + positive_normalized(adjustment.defringe)) * 0.2;
   const double center_x = (output.size.width - 1) * 0.5;
   const double center_y = (output.size.height - 1) * 0.5;
   const double maximum_radius = std::max(1.0, std::sqrt(center_x * center_x + center_y * center_y));
@@ -188,7 +267,7 @@ image_core::Status BasicProcessor::process(
     const double adjusted_luminance = luminance(red, green, blue);
     const double chroma = std::max({red, green, blue}) - std::min({red, green, blue});
     const double vibrance_gain = vibrance * (1.0 - std::clamp(chroma, 0.0, 1.0));
-    const double color_gain = std::max(0.0, 1.0 + saturation + vibrance_gain - artifact_reduction);
+    const double color_gain = std::max(0.0, 1.0 + saturation + vibrance_gain);
     red = adjusted_luminance + (red - adjusted_luminance) * color_gain;
     green = adjusted_luminance + (green - adjusted_luminance) * color_gain;
     blue = adjusted_luminance + (blue - adjusted_luminance) * color_gain;
@@ -225,6 +304,7 @@ image_core::Status BasicProcessor::process(
     output.pixels[offset + 2] = static_cast<std::uint8_t>(std::clamp(blue, 0.0, 1.0) * 255.0 + 0.5);
   }
 
+  apply_color_artifact_reduction(adjustment, output);
   apply_spatial_detail(adjustment, output);
   return image_core::Status::success();
 }

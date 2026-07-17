@@ -2333,26 +2333,18 @@ function AdjustmentPanel({
   onEditEnd: () => void;
 }) {
   const [curveExpanded, setCurveExpanded] = useState(false);
-  const [expandedSections, setExpandedSections] = useState<Record<ToolSectionId, boolean>>({
-    light: false,
-    color: false,
-    effects: false,
-    detail: false,
-    optics: false,
-  });
+  const [expandedSection, setExpandedSection] = useState<ToolSectionId | null>(null);
   return (
     <>
       {sections.map((section) => {
-        const expanded = expandedSections[section.id];
+        const expanded = expandedSection === section.id;
         return (
           <section className="control-section" key={section.id}>
             <button
               className="control-section-toggle"
               aria-expanded={expanded}
-              onClick={() => setExpandedSections((current) => ({
-                ...current,
-                [section.id]: !current[section.id],
-              }))}
+              onClick={() => setExpandedSection((current) =>
+                current === section.id ? null : section.id)}
             >
               <span>{section.title}</span>
               <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>

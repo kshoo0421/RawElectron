@@ -58,7 +58,12 @@ const differences = Object.fromEntries(Object.entries(cases).map(([name, value])
   return [name, { changedBytes, absoluteDifference }];
 }));
 
-addon.closeImage(image.id);
 const unchanged = Object.entries(differences).filter(([, result]) => result.changedBytes === 0);
 if (unchanged.length) throw new Error(`Adjustments did not change pixels: ${unchanged.map(([name]) => name).join(', ')}`);
+const moirePixels = render({ moire: 100 });
+const defringePixels = render({ defringe: 100 });
+if (Buffer.compare(Buffer.from(moirePixels), Buffer.from(defringePixels)) === 0) {
+  throw new Error('Moire and defringe must use distinct processing algorithms');
+}
+addon.closeImage(image.id);
 console.log(JSON.stringify(differences));
