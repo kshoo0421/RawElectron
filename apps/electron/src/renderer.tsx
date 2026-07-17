@@ -2927,6 +2927,31 @@ function SliderControl({
   const displayValue = control.step && control.step < 1
     ? control.value.toFixed(1).replace('.0', '')
     : Math.round(control.value).toString();
+  const valuePosition = ((control.value - control.min) / (control.max - control.min)) * 100;
+  const zeroPosition = ((0 - control.min) / (control.max - control.min)) * 100;
+  const centered = control.min < 0 && control.max > 0;
+  const colorTracks: Record<string, string> = {
+    temperature: 'linear-gradient(90deg, #315cff 0%, #d7d9d8 50%, #f1d943 100%)',
+    tint: 'linear-gradient(90deg, #36a755 0%, #d7d9d8 50%, #c43bc2 100%)',
+    vibrance: 'linear-gradient(90deg, #777 0%, #aaa 48%, #35a85a 65%, #e0c438 82%, #d9534f 100%)',
+    saturation: 'linear-gradient(90deg, #777 0%, #aaa 48%, #4f72dc 62%, #b948c5 78%, #e04b3f 100%)',
+    redHue: 'linear-gradient(90deg, #d23887 0%, #d94b43 50%, #df9a38 100%)',
+    redSaturation: 'linear-gradient(90deg, #777 0%, #aaa 50%, #e0443e 100%)',
+    greenHue: 'linear-gradient(90deg, #d6c23d 0%, #42b45d 50%, #35aeba 100%)',
+    greenSaturation: 'linear-gradient(90deg, #777 0%, #aaa 50%, #3fba5c 100%)',
+    blueHue: 'linear-gradient(90deg, #36aeba 0%, #426ce0 50%, #9a43d2 100%)',
+    blueSaturation: 'linear-gradient(90deg, #777 0%, #aaa 50%, #456fe0 100%)',
+    shadowHue: 'linear-gradient(90deg, #f24a4a, #eac842, #45bd61, #42bfc5, #4e6fe3, #bd4ad5, #f24a4a)',
+    midtoneHue: 'linear-gradient(90deg, #f24a4a, #eac842, #45bd61, #42bfc5, #4e6fe3, #bd4ad5, #f24a4a)',
+    highlightHue: 'linear-gradient(90deg, #f24a4a, #eac842, #45bd61, #42bfc5, #4e6fe3, #bd4ad5, #f24a4a)',
+  };
+  const segmentStart = Math.min(centered ? zeroPosition : 0, valuePosition);
+  const segmentEnd = Math.max(centered ? zeroPosition : 0, valuePosition);
+  const neutralTrack = `linear-gradient(90deg, #343a43 0%, #343a43 ${segmentStart}%, var(--accent) ${segmentStart}%, var(--accent) ${segmentEnd}%, #343a43 ${segmentEnd}%, #343a43 100%)`;
+  const sliderStyle = {
+    '--slider-background': colorTracks[control.id] ?? neutralTrack,
+    '--slider-zero': `${zeroPosition}%`,
+  } as React.CSSProperties;
   const commitDraft = () => {
     const parsed = Number(draft);
     const value = Number.isFinite(parsed)
@@ -2960,20 +2985,22 @@ function SliderControl({
           }}
         />
       </span>
-      <input
-        type="range"
-        tabIndex={-1}
-        min={control.min}
-        max={control.max}
-        step={control.step ?? 1}
-        value={control.value}
-        onPointerDown={onEditStart}
-        onPointerUp={onEditEnd}
-        onPointerCancel={onEditEnd}
-        onKeyDown={onEditStart}
-        onKeyUp={onEditEnd}
-        onChange={(event) => onChange(Number(event.currentTarget.value))}
-      />
+      <span className={`slider-track ${centered ? 'centered' : ''}`} style={sliderStyle}>
+        {centered && <i className="slider-zero-marker" aria-hidden="true" />}
+        <input
+          type="range"
+          min={control.min}
+          max={control.max}
+          step={control.step ?? 1}
+          value={control.value}
+          onPointerDown={onEditStart}
+          onPointerUp={onEditEnd}
+          onPointerCancel={onEditEnd}
+          onKeyDown={onEditStart}
+          onKeyUp={onEditEnd}
+          onChange={(event) => onChange(Number(event.currentTarget.value))}
+        />
+      </span>
     </label>
   );
 }
