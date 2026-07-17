@@ -405,6 +405,35 @@ ipcMain.handle('engine-preview-file:render', async (_event, request: EngineWorke
 ipcMain.on('shared-preview:connect', (event) => {
   debugLog('debug', '공유 메모리', 'UI의 공유 메모리 채널 연결 요청을 받았습니다.');
   const { port1, port2 } = new MessageChannelMain();
+  let renderingSharedPreview = false;
+  let latestSharedPreviewRequest: EngineWorkerRenderRequest | null = null;
+
+  const processSharedPreviews = async () => {
+    if (renderingSharedPreview) return;
+    renderingSharedPreview = true;
+    while (latestSharedPreviewRequest) {
+      const request = latestSharedPreviewRequest;
+      latestSharedPreviewRequest = null;
+      const width = request.preview.maxWidth;
+      const height = request.preview.maxHeight;
+      const sharedBuffer = new SharedArrayBuffer(width * height * 4);
+      try {
+        const result = await engineWorker.renderPreviewShared(request, sharedBuffer);
+        const pixels = Uint8ClampedArray.from(
+          new Uint8ClampedArray(sharedBuffer, 0, result.stride * result.height),
+        );
+        port2.postMessage({ type: 'shared-preview-ready', ...result, data: pixels });
+      } catch (error) {
+        port2.postMessage({
+          type: 'shared-preview-error',
+          requestId: request.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    renderingSharedPreview = false;
+  };
+
   port2.on('message', async ({ data }) => {
     if (data === null) {
       debugLog('error', '공유 메모리', '렌더러에서 보낸 메시지가 null로 변환되었습니다. SharedArrayBuffer를 프로세스 경계로 전달할 수 없습니다.');
@@ -427,21 +456,8 @@ ipcMain.on('shared-preview:connect', (event) => {
       port2.postMessage({ type: 'shared-preview-error', requestId: request.requestId, error: 'Invalid shared preview dimensions' });
       return;
     }
-    const sharedBuffer = new SharedArrayBuffer(width * height * 4);
-    const startedAt = performance.now();
-    try {
-      const result = await engineWorker.renderPreviewShared(request, sharedBuffer);
-      const pixels = Uint8ClampedArray.from(
-        new Uint8ClampedArray(sharedBuffer, 0, result.stride * result.height),
-      );
-      if (request.quality === 'original') {
-        debugLog('info', '공유 메모리', `이미지 #${request.imageId} 원본 이미지 적재 완료 (${result.width}×${result.height}, ${Math.round(performance.now() - startedAt)}ms)`);
-      }
-      port2.postMessage({ type: 'shared-preview-ready', ...result, data: pixels });
-    } catch (error) {
-      debugLog('error', '공유 메모리', `${request.quality} 이미지 적재 실패: ${error instanceof Error ? error.message : String(error)}`);
-      port2.postMessage({ type: 'shared-preview-error', requestId: request.requestId, error: error instanceof Error ? error.message : String(error) });
-    }
+    latestSharedPreviewRequest = request;
+    void processSharedPreviews();
   });
   port2.start();
   event.senderFrame.postMessage('shared-preview-port', null, [port1]);

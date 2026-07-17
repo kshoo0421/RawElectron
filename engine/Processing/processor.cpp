@@ -42,8 +42,17 @@ std::array<double, 3> hue_color(double degrees) {
   }
 }
 
-double apply_curve(const std::vector<image_core::Adjustment::CurvePoint>& custom_points, double value) {
-  if (custom_points.empty()) return std::clamp(value, 0.0, 1.0);
+constexpr std::size_t kCurveLutSize = 4096;
+using CurveLut = std::array<double, kCurveLutSize>;
+
+CurveLut build_curve_lut(const std::vector<image_core::Adjustment::CurvePoint>& custom_points) {
+  CurveLut lut{};
+  if (custom_points.empty()) {
+    for (std::size_t index = 0; index < lut.size(); ++index) {
+      lut[index] = static_cast<double>(index) / static_cast<double>(lut.size() - 1);
+    }
+    return lut;
+  }
   std::vector<image_core::Adjustment::CurvePoint> points;
   points.reserve(custom_points.size() + 2);
   points.push_back({0.0, 0.0});
@@ -53,13 +62,6 @@ double apply_curve(const std::vector<image_core::Adjustment::CurvePoint>& custom
     return left.x < right.x;
   });
 
-  const double x = std::clamp(value, 0.0, 1.0);
-  std::size_t segment = 0;
-  while (segment + 2 < points.size() && x > points[segment + 1].x) ++segment;
-  const auto& left = points[segment];
-  const auto& right = points[segment + 1];
-  const double width = std::max(1e-6, right.x - left.x);
-  const double t = std::clamp((x - left.x) / width, 0.0, 1.0);
   const auto slope = [&](std::size_t index) {
     if (index == 0) {
       return (points[1].y - points[0].y) / std::max(1e-6, points[1].x - points[0].x);
@@ -71,17 +73,35 @@ double apply_curve(const std::vector<image_core::Adjustment::CurvePoint>& custom
     return (points[index + 1].y - points[index - 1].y) /
         std::max(1e-6, points[index + 1].x - points[index - 1].x);
   };
-  const double m0 = slope(segment) * width;
-  const double m1 = slope(segment + 1) * width;
-  const double t2 = t * t;
-  const double t3 = t2 * t;
-  return std::clamp(
-      (2.0 * t3 - 3.0 * t2 + 1.0) * left.y +
-      (t3 - 2.0 * t2 + t) * m0 +
-      (-2.0 * t3 + 3.0 * t2) * right.y +
-      (t3 - t2) * m1,
-      0.0,
-      1.0);
+  std::size_t segment = 0;
+  for (std::size_t index = 0; index < lut.size(); ++index) {
+    const double x = static_cast<double>(index) / static_cast<double>(lut.size() - 1);
+    while (segment + 2 < points.size() && x > points[segment + 1].x) ++segment;
+    const auto& left = points[segment];
+    const auto& right = points[segment + 1];
+    const double width = std::max(1e-6, right.x - left.x);
+    const double t = std::clamp((x - left.x) / width, 0.0, 1.0);
+    const double m0 = slope(segment) * width;
+    const double m1 = slope(segment + 1) * width;
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    lut[index] = std::clamp(
+        (2.0 * t3 - 3.0 * t2 + 1.0) * left.y +
+        (t3 - 2.0 * t2 + t) * m0 +
+        (-2.0 * t3 + 3.0 * t2) * right.y +
+        (t3 - t2) * m1,
+        0.0,
+        1.0);
+  }
+  return lut;
+}
+
+double apply_curve_lut(const CurveLut& lut, double value) {
+  const double position = std::clamp(value, 0.0, 1.0) * static_cast<double>(lut.size() - 1);
+  const auto lower = static_cast<std::size_t>(position);
+  const auto upper = std::min(lower + 1, lut.size() - 1);
+  const double fraction = position - static_cast<double>(lower);
+  return lut[lower] + (lut[upper] - lut[lower]) * fraction;
 }
 
 bool is_identity(const image_core::Adjustment& value) {
@@ -348,6 +368,10 @@ image_core::Status BasicProcessor::process(
       highlight_saturation != 0.0;
   const bool has_curves = !adjustment.curve_rgb.empty() || !adjustment.curve_red.empty() ||
       !adjustment.curve_green.empty() || !adjustment.curve_blue.empty();
+  const CurveLut curve_rgb = build_curve_lut(adjustment.curve_rgb);
+  const CurveLut curve_red = build_curve_lut(adjustment.curve_red);
+  const CurveLut curve_green = build_curve_lut(adjustment.curve_green);
+  const CurveLut curve_blue = build_curve_lut(adjustment.curve_blue);
   const bool has_basic_pixel_adjustment = exposure != 1.0 || contrast != 0.0 || has_tone ||
       has_white_balance || has_saturation || has_channel_mixer || has_grading || dehaze != 0.0 ||
       vignette != 0.0 || grain != 0.0 || has_curves;
@@ -471,9 +495,9 @@ image_core::Status BasicProcessor::process(
     }
 
     if (has_curves) {
-      red = apply_curve(adjustment.curve_red, apply_curve(adjustment.curve_rgb, red));
-      green = apply_curve(adjustment.curve_green, apply_curve(adjustment.curve_rgb, green));
-      blue = apply_curve(adjustment.curve_blue, apply_curve(adjustment.curve_rgb, blue));
+      red = apply_curve_lut(curve_red, apply_curve_lut(curve_rgb, red));
+      green = apply_curve_lut(curve_green, apply_curve_lut(curve_rgb, green));
+      blue = apply_curve_lut(curve_blue, apply_curve_lut(curve_rgb, blue));
     }
 
     output.pixels[offset] = static_cast<std::uint8_t>(std::clamp(red, 0.0, 1.0) * 255.0 + 0.5);
