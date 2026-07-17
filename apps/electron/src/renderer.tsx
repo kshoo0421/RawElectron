@@ -388,6 +388,7 @@ function App() {
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewQuality, setPreviewQuality] = useState<'proxy' | 'original' | null>(null);
+  const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
   const [histograms, setHistograms] = useState<Histograms | null>(null);
   const [statusMessage, setStatusMessage] = useState('이미지를 열어 편집을 시작하세요.');
   const [viewportPixels, setViewportPixels] = useState({ width: 1280, height: 960 });
@@ -441,8 +442,11 @@ function App() {
     const availableHeight = Math.max(120, viewportPixels.height / deviceScale - 180);
     const sourceWidth = selectedImage.width;
     const sourceHeight = selectedImage.height;
-    const totalRotation = crop.quarterTurns * 90 + crop.rotation;
-    const radians = Math.abs(totalRotation) * Math.PI / 180;
+    // The engine applies quarter turns clockwise, then applies a positive fine
+    // rotation counter-clockwise. CSS uses clockwise-positive angles, so the
+    // equivalent screen-space angle is quarterTurns * 90 - rotation.
+    const displayRotation = crop.quarterTurns * 90 - crop.rotation;
+    const radians = Math.abs(displayRotation) * Math.PI / 180;
     const boundingWidth = sourceWidth * Math.abs(Math.cos(radians)) +
       sourceHeight * Math.abs(Math.sin(radians));
     const boundingHeight = sourceWidth * Math.abs(Math.sin(radians)) +
@@ -453,7 +457,7 @@ function App() {
       height: boundingHeight * scale,
       imageWidth: sourceWidth * scale,
       imageHeight: sourceHeight * scale,
-      totalRotation,
+      displayRotation,
     };
   }, [selectedImage, viewportPixels, crop.rotation, crop.quarterTurns]);
   const editParams = useMemo(() => buildEditParams(sections, curves, crop), [sections, curves, crop]);
@@ -466,6 +470,20 @@ function App() {
     () => controlTab === 'crop' ? cropPreviewParams : renderParams,
     [renderParams, cropPreviewParams, controlTab],
   );
+  const fittedPreviewSize = useMemo(() => {
+    if (previewSize.width <= 0 || previewSize.height <= 0) return undefined;
+    const deviceScale = window.devicePixelRatio || 1;
+    const availableWidth = Math.max(1, viewportPixels.width / deviceScale);
+    const availableHeight = Math.max(1, viewportPixels.height / deviceScale);
+    const scale = Math.min(
+      availableWidth / previewSize.width,
+      availableHeight / previewSize.height,
+    );
+    return {
+      width: previewSize.width * scale,
+      height: previewSize.height * scale,
+    };
+  }, [previewSize, viewportPixels]);
   const cloneEditState = (state: EditState): EditState => ({
     sections: state.sections.map((section) => ({
       ...section,
@@ -499,6 +517,7 @@ function App() {
     const start = transactionStart.current;
     transactionStart.current = null;
     if (start && JSON.stringify(start) !== JSON.stringify(editStateRef.current)) pushUndo(start);
+    setRenderQuality('original');
   };
   const undo = () => {
     endEdit();
@@ -753,14 +772,25 @@ function App() {
     if (!selectedImage || !sharedPreviewReady) {
       setPreviewUrl(null);
       setPreviewQuality(null);
+      setPreviewSize({ width: 0, height: 0 });
       setHistograms(null);
       return undefined;
     }
 
     let cancelled = false;
     const requestId = ++engineRequestId.current;
-    const targetWidth = Math.max(1, Math.min(selectedImage.width, viewportPixels.width));
-    const targetHeight = Math.max(1, Math.min(selectedImage.height, viewportPixels.height));
+    const previewWidth = Math.max(1, Math.min(selectedImage.width, viewportPixels.width));
+    const previewHeight = Math.max(1, Math.min(selectedImage.height, viewportPixels.height));
+    const geometry = previewRenderParams.crop;
+    const turns = ((geometry.quarterTurns % 4) + 4) % 4;
+    const baseWidth = turns % 2 === 0 ? selectedImage.width : selectedImage.height;
+    const baseHeight = turns % 2 === 0 ? selectedImage.height : selectedImage.width;
+    const radians = Math.abs(geometry.rotation) * Math.PI / 180;
+    const rotatedWidth = Math.ceil(baseWidth * Math.cos(radians) + baseHeight * Math.sin(radians));
+    const rotatedHeight = Math.ceil(baseWidth * Math.sin(radians) + baseHeight * Math.cos(radians));
+    const cropIsApplied = geometry.enabled && geometry.applyCrop !== false;
+    const originalWidth = Math.max(1, Math.round(rotatedWidth * (cropIsApplied ? geometry.width : 1)));
+    const originalHeight = Math.max(1, Math.round(rotatedHeight * (cropIsApplied ? geometry.height : 1)));
 
     const renderShared = (quality: 'proxy' | 'original') => new Promise<SharedPreviewResult>((resolve, reject) => {
       const port = sharedPreviewPort.current;
@@ -769,6 +799,8 @@ function App() {
         return;
       }
       sharedPreviewRequests.current.set(requestId, { resolve, reject });
+      const targetWidth = quality === 'original' ? originalWidth : previewWidth;
+      const targetHeight = quality === 'original' ? originalHeight : previewHeight;
       port.postMessage({
         type: 'render-shared-preview',
         request: {
@@ -787,10 +819,14 @@ function App() {
       canvas.height = result.height;
       const context = canvas.getContext('2d');
       if (!context) throw new Error('미리보기를 표시할 수 없습니다.');
-      const packed = new Uint8ClampedArray(result.width * result.height * 4);
       const rowBytes = result.width * 4;
-      for (let row = 0; row < result.height; row += 1) {
-        packed.set(result.data.subarray(row * result.stride, row * result.stride + rowBytes), row * rowBytes);
+      const packed = result.stride === rowBytes
+        ? result.data
+        : new Uint8ClampedArray(result.width * result.height * 4);
+      if (result.stride !== rowBytes) {
+        for (let row = 0; row < result.height; row += 1) {
+          packed.set(result.data.subarray(row * result.stride, row * result.stride + rowBytes), row * rowBytes);
+        }
       }
       context.putImageData(new ImageData(packed, result.width, result.height), 0, 0);
       const blob = await new Promise<Blob>((resolve, reject) => {
@@ -834,14 +870,17 @@ function App() {
       setHistograms(nextHistograms);
       setPreviewUrl(url);
       setPreviewQuality(result.quality);
-      setStatusMessage(result.quality === 'proxy' ? '빠른 미리보기' : '고품질 미리보기');
+      setPreviewSize({ width: result.width, height: result.height });
+      setStatusMessage(result.quality === 'proxy' ? '미리보기' : '원본 보기');
     };
 
     void (async () => {
       try {
         await display(await renderShared('proxy'));
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-        if (!cancelled) await display(await renderShared('original'));
+        if (renderQuality === 'original') {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+          if (!cancelled) await display(await renderShared('original'));
+        }
       } catch (error) {
         if (!cancelled) {
           const message = `미리보기 실패: ${error instanceof Error ? error.message : String(error)}`;
@@ -1486,7 +1525,39 @@ function App() {
               <button onClick={openImages}>+ 파일</button>
             </div>
           </div>
-          <div className="image-list">
+          <div
+            className={`image-list ${folderDropTarget === '__root__' ? 'root-drop-target' : ''}`}
+            onDragEnter={(event) => {
+              if (!draggedFolderId && !draggedLibraryPath) return;
+              event.preventDefault();
+              setFolderDropTarget('__root__');
+            }}
+            onDragOver={(event) => {
+              if (!draggedFolderId && !draggedLibraryPath) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'move';
+            }}
+            onDragLeave={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+              setFolderDropTarget((current) => current === '__root__' ? null : current);
+            }}
+            onDrop={(event) => {
+              if (!draggedFolderId && !draggedLibraryPath) return;
+              event.preventDefault();
+              event.stopPropagation();
+              if (draggedFolderId) moveFolderToFolder(draggedFolderId, null);
+              if (draggedLibraryPath) moveImageToFolder(draggedLibraryPath, null);
+              setDraggedFolderId(null);
+              setDraggedLibraryPath(null);
+              setFolderDropTarget(null);
+            }}
+          >
+            <div
+              className={`root-drop-zone ${draggedFolderId || draggedLibraryPath ? 'active' : ''}`}
+              aria-hidden="true"
+            >
+              ↰ 최상위로 이동
+            </div>
             {!libraryEntries.length && !libraryFolders.length && <p className="empty-note">파일과 폴더가 없습니다.</p>}
             {libraryEntries.filter((entry) => !entry.folderId).map(renderLibraryEntry)}
             {libraryFolders.filter((folder) => !folder.parentId).map((folder) => renderLibraryFolder(folder))}
@@ -1528,6 +1599,13 @@ function App() {
             void openDroppedImages(Array.from(event.dataTransfer.files), lastSelectedFolderId);
           }}
         >
+          {selectedImage && controlTab !== 'crop' && (
+            <div className="preview-quality-bar" role="status" aria-live="polite">
+              <span className={`quality-badge ${previewQuality === 'original' ? 'original' : ''}`}>
+                {previewQuality === 'original' ? '원본 보기' : '미리보기'}
+              </span>
+            </div>
+          )}
           <div
             className={`canvas ${isSpacePressed ? 'pan-ready' : ''} ${isPanning ? 'panning' : ''}`}
             ref={canvasRef}
@@ -1557,7 +1635,7 @@ function App() {
                         style={{
                           width: cropStage.imageWidth,
                           height: cropStage.imageHeight,
-                          transform: `translate(-50%, -50%) rotate(${-cropStage.totalRotation}deg) scale(${crop.flipHorizontal ? -1 : 1}, ${crop.flipVertical ? -1 : 1})`,
+                          transform: `translate(-50%, -50%) scale(${crop.flipHorizontal ? -1 : 1}, ${crop.flipVertical ? -1 : 1}) rotate(${cropStage.displayRotation}deg)`,
                         }}
                       />
                       <CropFrame
@@ -1577,6 +1655,7 @@ function App() {
                       src={previewUrl}
                       alt={selectedImage.name}
                       draggable={false}
+                      style={fittedPreviewSize}
                       onLoad={() => {
                         if (previewQuality) sharedPreviewPort.current?.postMessage({
                           type: 'shared-preview-displayed',
@@ -1678,7 +1757,13 @@ function App() {
           <div className="controls-heading control-tabs">
             <button
               className={controlTab === 'adjustments' ? 'active' : ''}
-              onClick={() => setControlTab('adjustments')}
+              onClick={() => {
+                if (controlTab === 'crop') {
+                  setZoom(1);
+                  setPan({ x: 0, y: 0 });
+                }
+                setControlTab('adjustments');
+              }}
             >
               보정
             </button>
@@ -1717,7 +1802,7 @@ function App() {
           <div className="control-footer">
             <button className="button quiet" disabled={!selectedImage} onClick={resetAll}>전체 초기화</button>
             <button className="button primary" disabled={!selectedImage} onClick={() => setRenderQuality('original')}>
-              고품질 적용
+              원본 보기
             </button>
           </div>
         </aside>

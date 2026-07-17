@@ -341,12 +341,21 @@ ipcMain.handle(
   async (_event, request: EngineWorkerExportRequest) => engineWorker.exportRenderedImage(request),
 );
 
+const maximumPreviewPixels = 4096 * 4096;
+const maximumOriginalPixels = 64_000_000;
+
+function validRenderDimensions(width: unknown, height: unknown, quality: 'proxy' | 'original') {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+      || (width as number) <= 0 || (height as number) <= 0) return false;
+  const maximumPixels = quality === 'original' ? maximumOriginalPixels : maximumPreviewPixels;
+  return (width as number) * (height as number) <= maximumPixels;
+}
+
 ipcMain.handle('engine-preview-file:render', async (_event, request: EngineWorkerRenderRequest) => {
   const width = request.preview?.maxWidth;
   const height = request.preview?.maxHeight;
   if (!Number.isSafeInteger(request.requestId) || !Number.isSafeInteger(request.imageId)
-      || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
-      || width <= 0 || height <= 0 || width * height > 4096 * 4096) {
+      || !validRenderDimensions(width, height, request.quality)) {
     throw new Error('Invalid preview file request');
   }
   fs.mkdirSync(previewRoot, { recursive: true });
@@ -389,8 +398,7 @@ ipcMain.on('shared-preview:connect', (event) => {
     const request = data.request as EngineWorkerRenderRequest;
     const width = request.preview?.maxWidth;
     const height = request.preview?.maxHeight;
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
-        || width <= 0 || height <= 0 || width * height > 4096 * 4096) {
+    if (!validRenderDimensions(width, height, request.quality)) {
       port2.postMessage({ type: 'shared-preview-error', requestId: request.requestId, error: 'Invalid shared preview dimensions' });
       return;
     }
