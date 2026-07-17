@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('rawElectron', {
   saveLibrary: (state: unknown) => ipcRenderer.invoke('library:save', state),
   loadEditState: (imageId: number) => ipcRenderer.invoke('edit-state:load', imageId),
   saveEditState: (imageId: number, state: unknown) => ipcRenderer.invoke('edit-state:save', imageId, state),
+  importXmpPreset: () => ipcRenderer.invoke('presets:import-xmp'),
+  exportXmpPreset: (values: unknown) => ipcRenderer.invoke('presets:export-xmp', values),
   exportImage: (imageId: number, params: unknown, format: unknown) =>
     ipcRenderer.invoke('images:export', imageId, params, format),
   dragExportImage: (imageId: number, params: unknown, format: unknown) =>

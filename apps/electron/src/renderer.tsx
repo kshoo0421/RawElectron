@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { DebugLogEntry, EditParams, ExportFormat } from './shared/engineTypes';
+import type { PresetValues } from './shared/presetXmp';
 import './index.css';
 
 type ThemeMode = 'dark' | 'light';
@@ -75,6 +76,92 @@ type Histograms = {
   green: number[];
   blue: number[];
 };
+type AutoAdjustmentPreset = 'balanced' | 'warm' | 'cool' | 'vivid' | 'soft';
+
+function histogramPercentile(values: number[], percentile: number) {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (total <= 0) return 0.5;
+  const target = total * percentile;
+  let accumulated = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    accumulated += values[index];
+    if (accumulated >= target) return (index + 0.5) / values.length;
+  }
+  return 1;
+}
+
+function histogramMean(values: number[]) {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (total <= 0) return 0.5;
+  return values.reduce((sum, value, index) =>
+    sum + value * ((index + 0.5) / values.length), 0) / total;
+}
+
+function calculateHistograms(result: SharedPreviewResult): Histograms {
+  const histograms: Histograms = {
+    luminance: Array(64).fill(0),
+    red: Array(64).fill(0),
+    green: Array(64).fill(0),
+    blue: Array(64).fill(0),
+  };
+  const sampleStep = Math.max(1, Math.floor((result.width * result.height) / 250_000));
+  let pixelIndex = 0;
+  for (let row = 0; row < result.height; row += 1) {
+    const rowOffset = row * result.stride;
+    for (let column = 0; column < result.width; column += 1, pixelIndex += 1) {
+      if (pixelIndex % sampleStep !== 0) continue;
+      const offset = rowOffset + column * 4;
+      const red = result.data[offset];
+      const green = result.data[offset + 1];
+      const blue = result.data[offset + 2];
+      const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
+      histograms.red[Math.min(63, red >> 2)] += 1;
+      histograms.green[Math.min(63, green >> 2)] += 1;
+      histograms.blue[Math.min(63, blue >> 2)] += 1;
+      histograms.luminance[Math.min(63, luminance >> 2)] += 1;
+    }
+  }
+  return histograms;
+}
+
+function automaticAdjustments(histograms: Histograms, preset: AutoAdjustmentPreset) {
+  const low = histogramPercentile(histograms.luminance, 0.05);
+  const middle = histogramPercentile(histograms.luminance, 0.5);
+  const high = histogramPercentile(histograms.luminance, 0.95);
+  const red = histogramMean(histograms.red);
+  const green = histogramMean(histograms.green);
+  const blue = histogramMean(histograms.blue);
+  const exposure = Math.max(-1.5, Math.min(1.5, Math.log2(0.48 / Math.max(0.05, middle))));
+  const neutralTemperature = Math.max(-35, Math.min(35, (blue - red) * 95));
+  const neutralTint = Math.max(-25, Math.min(25, (green - (red + blue) * 0.5) * 85));
+  const values: Record<string, number> = {
+    exposure,
+    contrast: Math.max(-20, Math.min(30, (0.78 - (high - low)) * 75)),
+    highlights: Math.max(-45, Math.min(25, (0.88 - high) * 140)),
+    shadows: Math.max(-20, Math.min(45, (0.12 - low) * 180)),
+    whites: Math.max(-20, Math.min(30, (0.96 - high) * 120)),
+    blacks: Math.max(-25, Math.min(20, (0.04 - low) * 150)),
+    temperature: neutralTemperature,
+    tint: neutralTint,
+    vibrance: 12,
+    saturation: 0,
+    clarity: 5,
+  };
+  if (preset === 'warm') Object.assign(values, {
+    temperature: neutralTemperature + 22, tint: neutralTint + 4, vibrance: 18, saturation: 3,
+  });
+  if (preset === 'cool') Object.assign(values, {
+    temperature: neutralTemperature - 22, tint: neutralTint - 2, vibrance: 14, saturation: -2,
+  });
+  if (preset === 'vivid') Object.assign(values, {
+    contrast: values.contrast + 14, vibrance: 30, saturation: 8, clarity: 18, texture: 10,
+  });
+  if (preset === 'soft') Object.assign(values, {
+    contrast: values.contrast - 14, highlights: values.highlights - 8,
+    shadows: values.shadows + 12, vibrance: 8, saturation: -6, clarity: -15, texture: -8,
+  });
+  return values;
+}
 
 declare global {
   interface Window {
@@ -87,6 +174,8 @@ declare global {
       saveLibrary: (state: { folders: LibraryFolder[]; entries: LibraryEntry[] }) => Promise<boolean>;
       loadEditState: (imageId: number) => Promise<PersistedEditState | null>;
       saveEditState: (imageId: number, state: PersistedEditState) => Promise<boolean>;
+      importXmpPreset: () => Promise<{ canceled: boolean; values?: PresetValues }>;
+      exportXmpPreset: (values: PresetValues) => Promise<{ canceled: boolean; path?: string }>;
       exportImage: (
         imageId: number,
         params: EditParams,
@@ -126,6 +215,20 @@ const editSections: ToolSection[] = [
       { id: 'tint', label: '색조', min: -100, max: 100, value: 0 },
       { id: 'vibrance', label: '생동감', min: -100, max: 100, value: 0 },
       { id: 'saturation', label: '채도', min: -100, max: 100, value: 0 },
+      { id: 'redHue', label: '빨강 색조', min: -100, max: 100, value: 0 },
+      { id: 'redSaturation', label: '빨강 채도', min: -100, max: 100, value: 0 },
+      { id: 'greenHue', label: '초록 색조', min: -100, max: 100, value: 0 },
+      { id: 'greenSaturation', label: '초록 채도', min: -100, max: 100, value: 0 },
+      { id: 'blueHue', label: '파랑 색조', min: -100, max: 100, value: 0 },
+      { id: 'blueSaturation', label: '파랑 채도', min: -100, max: 100, value: 0 },
+      { id: 'shadowHue', label: '어두운 영역 색조', min: 0, max: 360, value: 0 },
+      { id: 'shadowSaturation', label: '어두운 영역 채도', min: 0, max: 100, value: 0 },
+      { id: 'midtoneHue', label: '중간 영역 색조', min: 0, max: 360, value: 0 },
+      { id: 'midtoneSaturation', label: '중간 영역 채도', min: 0, max: 100, value: 0 },
+      { id: 'highlightHue', label: '밝은 영역 색조', min: 0, max: 360, value: 0 },
+      { id: 'highlightSaturation', label: '밝은 영역 채도', min: 0, max: 100, value: 0 },
+      { id: 'colorGradingBlending', label: '혼합', min: 0, max: 100, value: 50 },
+      { id: 'colorGradingBalance', label: '균형', min: -100, max: 100, value: 0 },
     ],
   },
   {
@@ -136,22 +239,37 @@ const editSections: ToolSection[] = [
       { id: 'clarity', label: '명료도', min: -100, max: 100, value: 0 },
       { id: 'dehaze', label: '안개 제거', min: -100, max: 100, value: 0 },
       { id: 'vignette', label: '비네팅', min: -100, max: 100, value: 0 },
+      { id: 'vignetteMidpoint', label: '중간점', min: 0, max: 100, value: 50 },
+      { id: 'vignetteRoundness', label: '원형률', min: -100, max: 100, value: 0 },
+      { id: 'vignetteFeather', label: '페더', min: 0, max: 100, value: 50 },
+      { id: 'vignetteHighlights', label: '밝은 영역', min: 0, max: 100, value: 0 },
       { id: 'grain', label: '그레인', min: 0, max: 100, value: 0 },
+      { id: 'grainSize', label: '크기', min: 0, max: 100, value: 25 },
+      { id: 'grainRoughness', label: '거칠기', min: 0, max: 100, value: 50 },
     ],
   },
   {
     id: 'detail',
     title: '디테일',
     controls: [
-      { id: 'sharpening', label: '선명도', min: 0, max: 150, value: 0 },
-      { id: 'luminanceNoise', label: '휘도 노이즈 감소', min: 0, max: 100, value: 0 },
+      { id: 'sharpening', label: '선명 효과', min: 0, max: 150, value: 0 },
+      { id: 'sharpeningRadius', label: '반경', min: 0.5, max: 3, value: 1, step: 0.1 },
+      { id: 'sharpeningDetail', label: '세부 정보', min: 0, max: 100, value: 25 },
+      { id: 'sharpeningMasking', label: '마스킹', min: 0, max: 100, value: 0 },
+      { id: 'luminanceNoise', label: '노이즈 감소', min: 0, max: 100, value: 0 },
+      { id: 'luminanceNoiseDetail', label: '세부 정보', min: 0, max: 100, value: 50 },
+      { id: 'luminanceNoiseContrast', label: '대비', min: 0, max: 100, value: 0 },
       { id: 'colorNoise', label: '색상 노이즈 감소', min: 0, max: 100, value: 0 },
+      { id: 'colorNoiseDetail', label: '세부 정보', min: 0, max: 100, value: 50 },
+      { id: 'colorNoiseSmoothness', label: '매끄러움', min: 0, max: 100, value: 50 },
     ],
   },
   {
     id: 'optics',
     title: '아티팩트 감소',
     controls: [
+      { id: 'removeCa', label: 'CA 제거', min: 0, max: 1, value: 0, step: 1 },
+      { id: 'lensCorrection', label: '렌즈 교정 사용', min: 0, max: 1, value: 0, step: 1 },
       { id: 'moire', label: '모아레 감소', min: 0, max: 100, value: 0 },
       { id: 'defringe', label: '프린지 제거', min: 0, max: 100, value: 0 },
     ],
@@ -178,16 +296,43 @@ function buildEditParams(sections: ToolSection[], curves: Curves, crop: CropStat
     tint: sliderValue(sections, 'tint'),
     vibrance: sliderValue(sections, 'vibrance'),
     saturation: sliderValue(sections, 'saturation'),
+    redHue: sliderValue(sections, 'redHue'),
+    redSaturation: sliderValue(sections, 'redSaturation'),
+    greenHue: sliderValue(sections, 'greenHue'),
+    greenSaturation: sliderValue(sections, 'greenSaturation'),
+    blueHue: sliderValue(sections, 'blueHue'),
+    blueSaturation: sliderValue(sections, 'blueSaturation'),
+    shadowHue: sliderValue(sections, 'shadowHue'),
+    shadowSaturation: sliderValue(sections, 'shadowSaturation'),
+    midtoneHue: sliderValue(sections, 'midtoneHue'),
+    midtoneSaturation: sliderValue(sections, 'midtoneSaturation'),
+    highlightHue: sliderValue(sections, 'highlightHue'),
+    highlightSaturation: sliderValue(sections, 'highlightSaturation'),
+    colorGradingBlending: sliderValue(sections, 'colorGradingBlending', 50),
+    colorGradingBalance: sliderValue(sections, 'colorGradingBalance'),
     texture: sliderValue(sections, 'texture'),
     clarity: sliderValue(sections, 'clarity'),
     dehaze: sliderValue(sections, 'dehaze'),
     vignette: sliderValue(sections, 'vignette'),
+    vignetteMidpoint: sliderValue(sections, 'vignetteMidpoint', 50),
+    vignetteRoundness: sliderValue(sections, 'vignetteRoundness'),
+    vignetteFeather: sliderValue(sections, 'vignetteFeather', 50),
+    vignetteHighlights: sliderValue(sections, 'vignetteHighlights'),
     grain: sliderValue(sections, 'grain'),
+    grainSize: sliderValue(sections, 'grainSize', 25),
+    grainRoughness: sliderValue(sections, 'grainRoughness', 50),
     sharpening: sliderValue(sections, 'sharpening'),
+    sharpeningRadius: sliderValue(sections, 'sharpeningRadius', 1),
+    sharpeningDetail: sliderValue(sections, 'sharpeningDetail', 25),
+    sharpeningMasking: sliderValue(sections, 'sharpeningMasking'),
     luminanceNoise: sliderValue(sections, 'luminanceNoise'),
+    luminanceNoiseDetail: sliderValue(sections, 'luminanceNoiseDetail', 50),
+    luminanceNoiseContrast: sliderValue(sections, 'luminanceNoiseContrast'),
     colorNoise: sliderValue(sections, 'colorNoise'),
-    removeCa: false,
-    lensCorrection: false,
+    colorNoiseDetail: sliderValue(sections, 'colorNoiseDetail', 50),
+    colorNoiseSmoothness: sliderValue(sections, 'colorNoiseSmoothness', 50),
+    removeCa: sliderValue(sections, 'removeCa') >= 0.5,
+    lensCorrection: sliderValue(sections, 'lensCorrection') >= 0.5,
     moire: sliderValue(sections, 'moire'),
     defringe: sliderValue(sections, 'defringe'),
     curves,
@@ -390,6 +535,7 @@ function App() {
   const [previewQuality, setPreviewQuality] = useState<'proxy' | 'original' | null>(null);
   const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
   const [histograms, setHistograms] = useState<Histograms | null>(null);
+  const [sourceHistograms, setSourceHistograms] = useState<Histograms | null>(null);
   const [statusMessage, setStatusMessage] = useState('이미지를 열어 편집을 시작하세요.');
   const [viewportPixels, setViewportPixels] = useState({ width: 1280, height: 960 });
   const [sections, setSections] = useState<ToolSection[]>(editSections);
@@ -416,6 +562,7 @@ function App() {
   const panStart = useRef({ pointerX: 0, pointerY: 0, panX: 0, panY: 0 });
   const engineRequestId = useRef(0);
   const generatedPreviewUrl = useRef<string | null>(null);
+  const sourceHistogramCache = useRef(new Map<number, Histograms>());
   const sharedPreviewPort = useRef<MessagePort | null>(null);
   const sharedPreviewRequests = useRef(new Map<number, {
     resolve: (value: SharedPreviewResult) => void;
@@ -565,6 +712,72 @@ function App() {
     setRenderQuality('proxy');
     if (selectedImageId !== null) {
       void window.rawElectron.saveEditState(selectedImageId, serializeEditState(editStateRef.current));
+    }
+  };
+  const applyAutomaticAdjustment = (preset: AutoAdjustmentPreset) => {
+    if (!sourceHistograms || selectedImageId === null) return;
+    const values = automaticAdjustments(sourceHistograms, preset);
+    const nextSections = editStateRef.current.sections.map((section) => ({
+      ...section,
+      controls: section.controls.map((control) => {
+        const value = values[control.id];
+        return value === undefined ? control : {
+          ...control,
+          value: Math.min(control.max, Math.max(control.min, value)),
+        };
+      }),
+    }));
+    if (JSON.stringify(nextSections) === JSON.stringify(editStateRef.current.sections)) return;
+    pushUndo(editStateRef.current);
+    const nextState = { ...editStateRef.current, sections: nextSections };
+    editStateRef.current = nextState;
+    setSections(nextSections);
+    setRenderQuality('original');
+    void window.rawElectron.saveEditState(selectedImageId, serializeEditState(nextState));
+  };
+  const applyPresetValues = (values: PresetValues) => {
+    if (selectedImageId === null) return;
+    const nextSections = editStateRef.current.sections.map((section) => ({
+      ...section,
+      controls: section.controls.map((control) => {
+        const presetValue = values[control.id as keyof PresetValues];
+        if (presetValue === undefined) return control;
+        const numeric = typeof presetValue === 'boolean' ? (presetValue ? 1 : 0) : presetValue;
+        return { ...control, value: Math.min(control.max, Math.max(control.min, numeric)) };
+      }),
+    }));
+    if (JSON.stringify(nextSections) === JSON.stringify(editStateRef.current.sections)) return;
+    pushUndo(editStateRef.current);
+    const nextState = { ...editStateRef.current, sections: nextSections };
+    editStateRef.current = nextState;
+    setSections(nextSections);
+    setRenderQuality('original');
+    void window.rawElectron.saveEditState(selectedImageId, serializeEditState(nextState));
+  };
+  const importXmpPreset = async () => {
+    try {
+      const result = await window.rawElectron.importXmpPreset();
+      if (!result.canceled && result.values) {
+        applyPresetValues(result.values);
+        setStatusMessage('XMP 프리셋을 적용했습니다.');
+      }
+    } catch (error) {
+      setStatusMessage(`XMP 프리셋 가져오기 실패: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  const exportXmpPreset = async () => {
+    try {
+      const values = Object.fromEntries(editStateRef.current.sections.flatMap((section) =>
+        section.controls.map((control) => [
+          control.id,
+          control.id === 'removeCa' || control.id === 'lensCorrection'
+            ? control.value >= 0.5
+            : control.value,
+        ]))) as PresetValues;
+      const result = await window.rawElectron.exportXmpPreset(values);
+      if (!result.canceled) setStatusMessage(`XMP 프리셋 저장 완료: ${result.path ?? ''}`);
+    } catch (error) {
+      setStatusMessage(`XMP 프리셋 내보내기 실패: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -774,11 +987,13 @@ function App() {
       setPreviewQuality(null);
       setPreviewSize({ width: 0, height: 0 });
       setHistograms(null);
+      setSourceHistograms(null);
       return undefined;
     }
 
     let cancelled = false;
     const requestId = ++engineRequestId.current;
+    setSourceHistograms(sourceHistogramCache.current.get(selectedImage.id) ?? null);
     const previewWidth = Math.max(1, Math.min(selectedImage.width, viewportPixels.width));
     const previewHeight = Math.max(1, Math.min(selectedImage.height, viewportPixels.height));
     const geometry = previewRenderParams.crop;
@@ -792,7 +1007,10 @@ function App() {
     const originalWidth = Math.max(1, Math.round(rotatedWidth * (cropIsApplied ? geometry.width : 1)));
     const originalHeight = Math.max(1, Math.round(rotatedHeight * (cropIsApplied ? geometry.height : 1)));
 
-    const renderShared = (quality: 'proxy' | 'original') => new Promise<SharedPreviewResult>((resolve, reject) => {
+    const renderShared = (
+      quality: 'proxy' | 'original',
+      params: EditParams = previewRenderParams,
+    ) => new Promise<SharedPreviewResult>((resolve, reject) => {
       const port = sharedPreviewPort.current;
       if (!port) {
         reject(new Error('미리보기 채널이 준비되지 않았습니다.'));
@@ -807,7 +1025,7 @@ function App() {
           requestId,
           imageId: selectedImage.id,
           quality,
-          params: previewRenderParams,
+          params,
           preview: { maxWidth: targetWidth, maxHeight: targetHeight },
         },
       });
@@ -844,30 +1062,7 @@ function App() {
       }
       if (generatedPreviewUrl.current) URL.revokeObjectURL(generatedPreviewUrl.current);
       generatedPreviewUrl.current = url;
-      const nextHistograms: Histograms = {
-        luminance: Array(64).fill(0),
-        red: Array(64).fill(0),
-        green: Array(64).fill(0),
-        blue: Array(64).fill(0),
-      };
-      const sampleStep = Math.max(1, Math.floor((result.width * result.height) / 250_000));
-      let pixelIndex = 0;
-      for (let row = 0; row < result.height; row += 1) {
-        const rowOffset = row * result.stride;
-        for (let column = 0; column < result.width; column += 1, pixelIndex += 1) {
-          if (pixelIndex % sampleStep !== 0) continue;
-          const offset = rowOffset + column * 4;
-          const red = result.data[offset];
-          const green = result.data[offset + 1];
-          const blue = result.data[offset + 2];
-          const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
-          nextHistograms.red[Math.min(63, red >> 2)] += 1;
-          nextHistograms.green[Math.min(63, green >> 2)] += 1;
-          nextHistograms.blue[Math.min(63, blue >> 2)] += 1;
-          nextHistograms.luminance[Math.min(63, luminance >> 2)] += 1;
-        }
-      }
-      setHistograms(nextHistograms);
+      setHistograms(calculateHistograms(result));
       setPreviewUrl(url);
       setPreviewQuality(result.quality);
       setPreviewSize({ width: result.width, height: result.height });
@@ -876,6 +1071,13 @@ function App() {
 
     void (async () => {
       try {
+        let sourceHistogram = sourceHistogramCache.current.get(selectedImage.id);
+        if (!sourceHistogram) {
+          const neutralParams = buildEditParams(editSections, identityCurves, identityCrop);
+          sourceHistogram = calculateHistograms(await renderShared('proxy', neutralParams));
+          sourceHistogramCache.current.set(selectedImage.id, sourceHistogram);
+        }
+        if (!cancelled) setSourceHistograms(sourceHistogram);
         await display(await renderShared('proxy'));
         if (renderQuality === 'original') {
           await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
@@ -1781,6 +1983,10 @@ function App() {
                 <AdjustmentPanel
                   sections={sections}
                   curves={curves}
+                  autoAdjustmentAvailable={Boolean(sourceHistograms)}
+                  onAutoAdjustment={applyAutomaticAdjustment}
+                  onImportPreset={() => void importXmpPreset()}
+                  onExportPreset={() => void exportXmpPreset()}
                   onEditStart={beginEdit}
                   onEditEnd={endEdit}
                   onSlider={changeSliderValue}
@@ -2320,6 +2526,10 @@ function portCleanup(port: MessagePort | null) {
 function AdjustmentPanel({
   sections,
   curves,
+  autoAdjustmentAvailable,
+  onAutoAdjustment,
+  onImportPreset,
+  onExportPreset,
   onSlider,
   onCurveChange,
   onEditStart,
@@ -2327,15 +2537,56 @@ function AdjustmentPanel({
 }: {
   sections: ToolSection[];
   curves: Curves;
+  autoAdjustmentAvailable: boolean;
+  onAutoAdjustment: (preset: AutoAdjustmentPreset) => void;
+  onImportPreset: () => void;
+  onExportPreset: () => void;
   onSlider: (sectionId: ToolSectionId, controlId: string, value: number) => void;
   onCurveChange: (channel: CurveChannel, points: CurvePoint[]) => void;
   onEditStart: () => void;
   onEditEnd: () => void;
 }) {
   const [curveExpanded, setCurveExpanded] = useState(false);
-  const [expandedSection, setExpandedSection] = useState<ToolSectionId | null>(null);
+  const [expandedSection, setExpandedSection] = useState<ToolSectionId | 'auto' | null>(null);
+  const autoExpanded = expandedSection === 'auto';
   return (
     <>
+      <section className="control-section auto-adjustment-section" aria-label="자동 보정">
+        <button
+          className="control-section-toggle"
+          aria-expanded={autoExpanded}
+          onClick={() => setExpandedSection((current) => current === 'auto' ? null : 'auto')}
+        >
+          <span>자동 보정</span>
+          <span aria-hidden="true">{autoExpanded ? '▾' : '▸'}</span>
+        </button>
+        {autoExpanded && (
+          <div className="control-section-content">
+            <p className="auto-adjustment-description">현재 사진의 밝기와 RGB 분포를 분석합니다.</p>
+            <div className="auto-adjustment-options">
+              {([
+                ['balanced', '기본'],
+                ['warm', '따뜻하게'],
+                ['cool', '차갑게'],
+                ['vivid', '선명하게'],
+                ['soft', '부드럽게'],
+              ] as Array<[AutoAdjustmentPreset, string]>).map(([preset, label]) => (
+                <button
+                  key={preset}
+                  disabled={!autoAdjustmentAvailable}
+                  onClick={() => onAutoAdjustment(preset)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="preset-file-actions">
+              <button type="button" onClick={onImportPreset}>XMP 가져오기</button>
+              <button type="button" onClick={onExportPreset}>XMP 내보내기</button>
+            </div>
+          </div>
+        )}
+      </section>
       {sections.map((section) => {
         const expanded = expandedSection === section.id;
         return (
@@ -2351,6 +2602,22 @@ function AdjustmentPanel({
             </button>
             {expanded && (
               <div className="control-section-content">
+                {section.id === 'color' && (
+                  <div className="white-balance-presets" aria-label="화이트 밸런스">
+                    <span>WB</span>
+                    {([
+                      ['원본값', 0, 0], ['일광', 10, 0], ['흐림', 20, 2],
+                      ['그늘', 30, 4], ['텅스텐', -35, 0], ['형광등', -15, 12],
+                    ] as Array<[string, number, number]>).map(([label, temperature, tint]) => (
+                      <button key={label} type="button" onClick={() => {
+                        onEditStart();
+                        onSlider('color', 'temperature', temperature);
+                        onSlider('color', 'tint', tint);
+                        onEditEnd();
+                      }}>{label}</button>
+                    ))}
+                  </div>
+                )}
                 {section.id === 'light' && (
                   <div className="curve-section">
                     <button
@@ -2372,13 +2639,29 @@ function AdjustmentPanel({
                   </div>
                 )}
                 {section.controls.map((control) => (
-                  <SliderControl
-                    key={control.id}
-                    control={control}
-                    onEditStart={onEditStart}
-                    onEditEnd={onEditEnd}
-                    onChange={(value) => onSlider(section.id, control.id, value)}
-                  />
+                  control.id === 'removeCa' || control.id === 'lensCorrection'
+                    ? <button
+                        key={control.id}
+                        type="button"
+                        role="switch"
+                        aria-checked={control.value >= 0.5}
+                        className={`option-switch ${control.value >= 0.5 ? 'enabled' : ''}`}
+                        onClick={() => {
+                          onEditStart();
+                          onSlider(section.id, control.id, control.value >= 0.5 ? 0 : 1);
+                          onEditEnd();
+                        }}
+                      >
+                        <span aria-hidden="true"><i /></span>
+                        {control.label}
+                      </button>
+                    : <SliderControl
+                        key={control.id}
+                        control={control}
+                        onEditStart={onEditStart}
+                        onEditEnd={onEditEnd}
+                        onChange={(value) => onSlider(section.id, control.id, value)}
+                      />
                 ))}
               </div>
             )}

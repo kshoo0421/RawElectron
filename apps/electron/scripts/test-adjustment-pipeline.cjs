@@ -39,6 +39,15 @@ const cases = {
   colorNoise: 100,
   moire: 100,
   defringe: 100,
+  vignetteShape: { vignette: -70, vignetteMidpoint: 25, vignetteRoundness: 60, vignetteFeather: 20, vignetteHighlights: 40 },
+  grainShape: { grain: 70, grainSize: 80, grainRoughness: 90 },
+  sharpeningControls: { sharpening: 100, sharpeningRadius: 2.2, sharpeningDetail: 80, sharpeningMasking: 35 },
+  luminanceNoiseControls: { luminanceNoise: 70, luminanceNoiseDetail: 20, luminanceNoiseContrast: 60 },
+  colorNoiseControls: { colorNoise: 70, colorNoiseDetail: 20, colorNoiseSmoothness: 90 },
+  removeCa: true,
+  lensCorrection: true,
+  colorMixer: { redHue: 45, redSaturation: 35, greenHue: -30, greenSaturation: 20, blueHue: 25, blueSaturation: 40 },
+  colorGrading: { shadowHue: 220, shadowSaturation: 35, midtoneHue: 35, midtoneSaturation: 20, highlightHue: 55, highlightSaturation: 30, colorGradingBlending: 65, colorGradingBalance: 15 },
   curves: {
     rgb: [{ x: 0.25, y: 0.1 }, { x: 0.7, y: 0.85 }],
     red: [{ x: 0.5, y: 0.25 }],
@@ -48,7 +57,9 @@ const cases = {
 };
 
 const differences = Object.fromEntries(Object.entries(cases).map(([name, value]) => {
-  const pixels = render({ [name]: value });
+  const pixels = render(typeof value === 'object' && !Array.isArray(value) && name !== 'curves'
+    ? value
+    : { [name]: value });
   let changedBytes = 0;
   let absoluteDifference = 0;
   for (let index = 0; index < baseline.length; index += 1) {

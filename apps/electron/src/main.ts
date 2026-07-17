@@ -22,6 +22,8 @@ import type {
   DebugLogLevel,
   ExportFormat,
 } from './shared/engineTypes';
+import { exportCameraRawXmp, importCameraRawXmp } from './shared/presetXmp';
+import type { PresetValues } from './shared/presetXmp';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -75,6 +77,29 @@ ipcMain.on('debug-logs:report-info', (_event, payload: { source?: unknown; messa
   const source = typeof payload?.source === 'string' ? payload.source.slice(0, 40) : 'UI';
   const message = typeof payload?.message === 'string' ? payload.message.slice(0, 1000) : 'UI 상태 알림';
   debugLog('debug', source, message);
+});
+
+ipcMain.handle('presets:import-xmp', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'XMP 프리셋 가져오기',
+    properties: ['openFile'],
+    filters: [{ name: 'Adobe Camera Raw preset', extensions: ['xmp'] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  const source = fs.readFileSync(result.filePaths[0], 'utf8');
+  return { canceled: false, values: importCameraRawXmp(source) };
+});
+
+ipcMain.handle('presets:export-xmp', async (_event, values: PresetValues) => {
+  const result = await dialog.showSaveDialog({
+    title: 'XMP 프리셋 내보내기',
+    defaultPath: 'RawElectron Preset.xmp',
+    filters: [{ name: 'Adobe Camera Raw preset', extensions: ['xmp'] }],
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  const presetName = path.basename(result.filePath, path.extname(result.filePath));
+  fs.writeFileSync(result.filePath, exportCameraRawXmp(presetName, values), 'utf8');
+  return { canceled: false, path: result.filePath };
 });
 
 type ImageFile = {
