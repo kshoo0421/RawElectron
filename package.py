@@ -61,7 +61,7 @@ def package_macos(arch: str) -> None:
 
 def collect_artifacts(target: str, arch: str) -> list[Path]:
     artifact_root = (
-        OUT_DIR / "squirrel.windows" / arch
+        OUT_DIR / "zip" / "win32" / arch
         if target == "windows"
         else OUT_DIR / "zip" / "darwin" / arch
     )
@@ -72,11 +72,9 @@ def collect_artifacts(target: str, arch: str) -> list[Path]:
     INSTALLER_DIR.mkdir(exist_ok=True)
     collected: list[Path] = []
     for artifact in artifacts:
-        if target == "windows":
-            destination_name = artifact.name
-        else:
-            suffix = "".join(artifact.suffixes)
-            destination_name = f"RawElectron-macOS-{arch}{suffix}"
+        suffix = artifact.suffix
+        platform_name = "Windows" if target == "windows" else "macOS"
+        destination_name = f"RawElectron-{platform_name}-{arch}{suffix}"
         destination = INSTALLER_DIR / destination_name
         shutil.copy2(artifact, destination)
         collected.append(destination)

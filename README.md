@@ -6,15 +6,15 @@
 
 Electron 앱은 플랫폼별 네이티브 런타임을 포함하므로 대상 운영체제에서 빌드한다.
 
-Windows x64 설치 프로그램(Squirrel.Windows)은 다음 명령으로 만든다.
+Windows x64 포터블 ZIP은 다음 명령으로 만든다.
 
 ```powershell
 python package.py
 ```
 
-완료 후 루트의 `installer/RawElectron-Setup.exe`가 생성된다.
-설치 프로그램을 실행하면 사용자 계정에 앱과 시작 메뉴 바로가기가 설치되며, Windows의
-`설정 > 앱 > 설치된 앱 > RawElectron`에서 일반 앱과 동일하게 제거할 수 있다.
+완료 후 루트의 `installer/RawElectron-Windows-x64.zip`이 생성된다. ZIP을 압축 해제한 뒤
+폴더 안의 `RawElectron.exe`를 실행한다. 별도의 설치 과정은 없으며 제거할 때는 압축을
+해제한 폴더를 삭제하면 된다.
 
 macOS에서는 네이티브 의존성을 macOS용으로 빌드한 뒤 아래 명령으로 `.app` ZIP을 만든다.
 
