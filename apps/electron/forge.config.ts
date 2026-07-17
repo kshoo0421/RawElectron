@@ -39,6 +39,8 @@ const nativeResourceCandidates = [
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    appBundleId: 'com.rawelectron.app',
+    executableName: 'RawElectron',
     osxSign: {
       identity: '-',
     },
@@ -64,7 +66,11 @@ const config: ForgeConfig = {
     },
   },
   makers: [
-    new MakerSquirrel({}),
+    new MakerSquirrel({
+      name: 'RawElectron',
+      setupExe: 'RawElectron-Setup.exe',
+      noMsi: true,
+    }),
     new MakerZIP({}, ['darwin']),
     new MakerRpm({}),
     new MakerDeb({}),

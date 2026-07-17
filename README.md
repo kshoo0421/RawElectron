@@ -2,6 +2,32 @@
 
 > High-performance local RAW image editor prototype built with Electron, React, and C++.
 
+## 데스크톱 앱 패키징
+
+Electron 앱은 플랫폼별 네이티브 런타임을 포함하므로 대상 운영체제에서 빌드한다.
+
+Windows x64 설치 프로그램(Squirrel.Windows)은 다음 명령으로 만든다.
+
+```powershell
+python package.py
+```
+
+완료 후 루트의 `installer/RawElectron-Setup.exe`가 생성된다.
+설치 프로그램을 실행하면 사용자 계정에 앱과 시작 메뉴 바로가기가 설치되며, Windows의
+`설정 > 앱 > 설치된 앱 > RawElectron`에서 일반 앱과 동일하게 제거할 수 있다.
+
+macOS에서는 네이티브 의존성을 macOS용으로 빌드한 뒤 아래 명령으로 `.app` ZIP을 만든다.
+
+```bash
+python3 package.py
+```
+
+macOS 결과물도 동일하게 루트의 `installer` 폴더에 모인다.
+
+명시적으로 플랫폼과 아키텍처를 검사하려면 `--platform windows --arch x64` 또는
+`--platform macos --arch arm64`를 지정할 수 있다. 네이티브 라이브러리 때문에 다른
+운영체제용 패키지의 교차 빌드는 허용하지 않는다.
+
 ---
 
 # Overview

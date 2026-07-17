@@ -5,6 +5,7 @@ apps/electron/native/build/
 apps/electron/native/opencv.gypi
 apps/electron/node_modules/
 apps/electron/out/
+installer/
 build/
 third_party/opencv/.cache/
 third_party/opencv/build/

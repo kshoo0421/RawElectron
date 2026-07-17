@@ -15,7 +15,7 @@ if (process.platform === 'darwin') {
   env.NODE_OPTIONS = [env.NODE_OPTIONS, `--require=${preload}`].filter(Boolean).join(' ');
 }
 
-const result = spawnSync(forgeBin, [command], {
+const result = spawnSync(forgeBin, [command, ...process.argv.slice(3)], {
   cwd: path.join(__dirname, '..'),
   env,
   stdio: 'inherit',

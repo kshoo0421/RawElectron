@@ -1,8 +1,8 @@
 {
   "name": "rawelectron",
-  "productName": "rawelectron",
+  "productName": "RawElectron",
   "version": "1.0.0",
-  "description": "My Electron application description",
+  "description": "A high-performance local RAW image editor",
   "main": ".vite/build/main.js",
   "private": true,
   "scripts": {
@@ -19,6 +19,8 @@
     "test:preview-preload": "electron scripts/test-preview-preload-electron.cjs",
     "package": "node scripts/run-forge.cjs package",
     "make": "node scripts/run-forge.cjs make",
+    "make:win": "node scripts/run-forge.cjs make --platform=win32 --arch=x64",
+    "make:mac": "node scripts/run-forge.cjs make --platform=darwin",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx ."
   },
