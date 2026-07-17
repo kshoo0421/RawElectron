@@ -2946,11 +2946,10 @@ function SliderControl({
   onEditStart: () => void;
   onEditEnd: () => void;
 }) {
-  const [draft, setDraft] = useState(String(control.value));
-  useEffect(() => setDraft(String(control.value)), [control.value]);
-  const displayValue = control.step && control.step < 1
-    ? control.value.toFixed(1).replace('.0', '')
-    : Math.round(control.value).toString();
+  const formatValue = (value: number) => Number(value.toFixed(3)).toString();
+  const [draft, setDraft] = useState(formatValue(control.value));
+  useEffect(() => setDraft(formatValue(control.value)), [control.value]);
+  const displayValue = formatValue(control.value);
   const valuePosition = ((control.value - control.min) / (control.max - control.min)) * 100;
   const zeroPosition = ((0 - control.min) / (control.max - control.min)) * 100;
   const centered = control.min < 0 && control.max > 0;
@@ -2982,7 +2981,7 @@ function SliderControl({
       ? Math.min(control.max, Math.max(control.min, parsed))
       : control.value;
     onChange(value);
-    setDraft(String(value));
+    setDraft(formatValue(value));
     onEditEnd();
   };
   return (
