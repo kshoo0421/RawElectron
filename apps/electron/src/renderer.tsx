@@ -1047,6 +1047,8 @@ function App() {
 
     let cancelled = false;
     const requestId = ++engineRequestId.current;
+    setPreviewQuality(null);
+    setStatusMessage('로딩 중');
     setSourceHistograms(sourceHistogramCache.current.get(selectedImage.id) ?? null);
     const previewWidth = Math.max(1, Math.min(selectedImage.width, viewportPixels.width));
     const previewHeight = Math.max(1, Math.min(selectedImage.height, viewportPixels.height));
@@ -1893,8 +1895,12 @@ function App() {
         >
           {selectedImage && controlTab !== 'crop' && (
             <div className="preview-quality-bar" role="status" aria-live="polite">
-              <span className={`quality-badge ${previewQuality === 'original' ? 'original' : ''}`}>
-                {previewQuality === 'original' ? '원본 보기' : '미리보기'}
+              <span className={`quality-badge ${previewQuality ?? 'loading'}`}>
+                {previewQuality === 'original'
+                  ? '원본 보기'
+                  : previewQuality === 'proxy'
+                    ? '미리보기'
+                    : '로딩 중'}
               </span>
             </div>
           )}
