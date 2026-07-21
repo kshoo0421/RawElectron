@@ -13,6 +13,8 @@ ipcRenderer.on('shared-preview-port', (event) => {
 });
 
 contextBridge.exposeInMainWorld('rawElectron', {
+  loadSettings: () => ipcRenderer.invoke('settings:load'),
+  saveSettings: (settings: unknown) => ipcRenderer.invoke('settings:save', settings),
   openImages: () => ipcRenderer.invoke('images:open'),
   openDroppedImages: (files: File[]) =>
     ipcRenderer.invoke('images:open-paths', files.map((file) => webUtils.getPathForFile(file))),

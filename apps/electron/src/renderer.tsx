@@ -2,9 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { DebugLogEntry, EditParams, ExportFormat } from './shared/engineTypes';
 import type { PresetValues } from './shared/presetXmp';
+import type { AppLocale, AppSettings, ThemeMode } from './shared/appSettings';
+import { defaultAppSettings } from './shared/appSettings';
+import { getLocale, setLocale, t } from './i18n';
 import './index.css';
 
-type ThemeMode = 'dark' | 'light';
 type ToolSectionId = 'light' | 'color' | 'effects' | 'detail' | 'optics';
 
 type SliderOption = {
@@ -36,7 +38,7 @@ const identityCurves: Curves = {
 };
 const identityCrop: CropState = {
   enabled: false,
-  ratio: '원본',
+  ratio: 'original',
   rotation: 0,
   quarterTurns: 0,
   flipHorizontal: false,
@@ -166,6 +168,8 @@ function automaticAdjustments(histograms: Histograms, preset: AutoAdjustmentPres
 declare global {
   interface Window {
     rawElectron: {
+      loadSettings: () => Promise<AppSettings>;
+      saveSettings: (settings: AppSettings) => Promise<AppSettings>;
       openImages: () => Promise<ImageFile[]>;
       openDroppedImages: (files: File[]) => Promise<ImageFile[]>;
       closeImage: (imageId: number) => Promise<boolean>;
@@ -494,13 +498,21 @@ function deserializeEditState(stored: PersistedEditState | null): EditState {
       }
     : identityCurves;
   const crop = stored.crop && typeof stored.crop === 'object'
-    ? { ...identityCrop, ...stored.crop }
+    ? {
+        ...identityCrop,
+        ...stored.crop,
+        ratio: stored.crop.ratio === '원본' ? 'original'
+          : stored.crop.ratio === '자유' ? 'free' : stored.crop.ratio,
+      }
     : identityCrop;
   return { sections, curves, crop };
 }
 
 function App() {
-  const [theme, setTheme] = useState<ThemeMode>('dark');
+  const [theme, setTheme] = useState<ThemeMode>(defaultAppSettings.theme);
+  const [locale, setAppLocale] = useState<AppLocale>(defaultAppSettings.locale);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [libraryWidth, setLibraryWidth] = useState(220);
   const [controlsWidth, setControlsWidth] = useState(330);
   const [resizingPanel, setResizingPanel] = useState<'library' | 'controls' | null>(null);
@@ -580,6 +592,24 @@ function App() {
   const editLoadRequest = useRef(0);
   const proxyRenderFrame = useRef<number | null>(null);
   const [, setHistoryVersion] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    void window.rawElectron.loadSettings().then((settings) => {
+      if (!active) return;
+      setLocale(settings.locale);
+      setAppLocale(settings.locale);
+      setTheme(settings.theme);
+      setSettingsLoaded(true);
+    }).catch(() => setSettingsLoaded(true));
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    setLocale(locale);
+    document.documentElement.lang = locale;
+    if (settingsLoaded) void window.rawElectron.saveSettings({ locale, theme });
+  }, [locale, theme, settingsLoaded]);
 
   const selectedImage = images.find((image) => image.id === selectedImageId) ?? null;
   const cropImageAspect = selectedImage
@@ -1774,14 +1804,14 @@ function App() {
       <header className="app-header">
         <div className="brand">
           <strong>RawElectron</strong>
-          <span>{selectedImage ? selectedImage.name : '이미지 편집기'}</span>
+          <span>{selectedImage ? selectedImage.name : t('이미지 편집기')}</span>
         </div>
         <div className="header-actions">
-          <div className="history-actions" aria-label="편집 기록">
+          <div className="history-actions" aria-label={t('편집 기록')}>
             <button
               className="icon-button"
-              title="실행 취소 (Ctrl+Z)"
-              aria-label="실행 취소"
+              title={`${t('실행 취소')} (Ctrl+Z)`}
+              aria-label={t('실행 취소')}
               disabled={selectedImageId === null || !undoStack.current.length}
               onClick={undo}
             >
@@ -1789,17 +1819,17 @@ function App() {
             </button>
             <button
               className="icon-button"
-              title="다시 실행 (Ctrl+Shift+Z)"
-              aria-label="다시 실행"
+              title={`${t('다시 실행')} (Ctrl+Shift+Z)`}
+              aria-label={t('다시 실행')}
               disabled={selectedImageId === null || !redoStack.current.length}
               onClick={redo}
             >
               ↷
             </button>
           </div>
-          <button className="button" disabled={isExporting} onClick={openImages}>파일 열기</button>
+          <button className="button" disabled={isExporting} onClick={openImages}>{t('파일 열기')}</button>
           <label className="format-select">
-            <span>저장 형식</span>
+            <span>{t('저장 형식')}</span>
             <select
               disabled={isExporting}
               value={exportFormat}
@@ -1817,10 +1847,13 @@ function App() {
             </select>
           </label>
           <button className="button primary" disabled={!selectedImage || isExporting} onClick={exportImage}>
-            {isExporting ? '저장 중…' : '다른 이름으로 저장'}
+            {isExporting ? t('저장 중…') : t('다른 이름으로 저장')}
           </button>
           <button className="button quiet" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}>
-            {theme === 'dark' ? '밝은 화면' : '어두운 화면'}
+            {theme === 'dark' ? t('밝은 화면') : t('어두운 화면')}
+          </button>
+          <button className="button quiet" aria-label={t('설정')} onClick={() => setShowSettings(true)}>
+            ⚙ {t('설정')}
           </button>
         </div>
       </header>
@@ -1831,10 +1864,10 @@ function App() {
       >
         <aside className="library">
           <div className="pane-heading">
-            <strong>파일 목록</strong>
+            <strong>{t('파일 목록')}</strong>
             <div className="pane-actions">
-              <button onClick={() => createFolder()}>+ 폴더</button>
-              <button onClick={openImages}>+ 파일</button>
+              <button onClick={() => createFolder()}>{t('+ 폴더')}</button>
+              <button onClick={openImages}>{t('+ 파일')}</button>
             </div>
           </div>
           <div
@@ -1870,7 +1903,7 @@ function App() {
             >
               ↰ 최상위로 이동
             </div>
-            {!libraryEntries.length && !libraryFolders.length && <p className="empty-note">파일과 폴더가 없습니다.</p>}
+            {!libraryEntries.length && !libraryFolders.length && <p className="empty-note">{t('파일과 폴더가 없습니다.')}</p>}
             {libraryEntries.filter((entry) => !entry.folderId).map(renderLibraryEntry)}
             {libraryFolders.filter((folder) => !folder.parentId).map((folder) => renderLibraryFolder(folder))}
           </div>
@@ -1879,7 +1912,7 @@ function App() {
         <div
           className="panel-resizer library-resizer"
           role="separator"
-          aria-label="파일 목록 패널 너비 조절"
+          aria-label={t('파일 목록 패널 너비 조절')}
           aria-orientation="vertical"
           aria-valuemin={160}
           aria-valuemax={420}
@@ -1914,11 +1947,11 @@ function App() {
           {selectedImage && controlTab !== 'crop' && (
             <div className="preview-quality-bar" role="status" aria-live="polite">
               <span className={`quality-badge ${previewQuality ?? 'loading'}`}>
-                {previewQuality === 'original'
+                {t(previewQuality === 'original'
                   ? '원본 보기'
                   : previewQuality === 'proxy'
                     ? '미리보기'
-                    : '로딩 중'}
+                    : '로딩 중')}
               </span>
             </div>
           )}
@@ -1926,7 +1959,7 @@ function App() {
             className={`canvas ${isSpacePressed ? 'pan-ready' : ''} ${isPanning ? 'panning' : ''}`}
             ref={canvasRef}
             tabIndex={selectedImage && controlTab !== 'crop' ? 0 : -1}
-            aria-label="이미지 뷰포트. 방향키로 이동"
+            aria-label={t('이미지 뷰포트. 방향키로 이동')}
             onWheel={handleViewerWheel}
             onPointerDown={startPanning}
             onPointerMove={movePanning}
@@ -1962,7 +1995,7 @@ function App() {
                         onEditEnd={endEdit}
                       />
                     </div>
-                  : <div className="loading">자르기용 이미지를 만드는 중입니다…</div>
+                  : <div className="loading">{t('자르기용 이미지를 만드는 중입니다…')}</div>
                 : previewReady
                   ? <div
                     className="image-transform"
@@ -1976,23 +2009,23 @@ function App() {
                       style={fittedPreviewSize}
                     />
                   </div>
-                  : <div className="loading">미리보기를 만드는 중입니다…</div>
+                  : <div className="loading">{t('미리보기를 만드는 중입니다…')}</div>
             ) : selectedLibraryPath && loadingPaths.has(selectedLibraryPath) ? (
               <div className="empty-state loading-library-entry">
                 <span className="spinner" aria-hidden="true" />
-                <h1>이미지를 불러오는 중입니다</h1>
+                <h1>{t('이미지를 불러오는 중입니다')}</h1>
                 <p>{selectedLibraryPath.split(/[\\/]/).pop()}</p>
               </div>
             ) : selectedLibraryPath && failedPaths.has(selectedLibraryPath) ? (
               <div className="empty-state">
-                <h1>이미지를 불러오지 못했습니다</h1>
-                <p>원본 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.</p>
+                <h1>{t('이미지를 불러오지 못했습니다')}</h1>
+                <p>{t('원본 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.')}</p>
               </div>
             ) : (
               <div className="empty-state">
-                <h1>편집할 이미지를 여세요</h1>
-                <p>RAW와 일반 이미지 파일을 불러와 조정하고 다른 형식으로 저장할 수 있습니다.</p>
-                <button className="button primary" onClick={openImages}>이미지 선택</button>
+                <h1>{t('편집할 이미지를 여세요')}</h1>
+                <p>{t('RAW와 일반 이미지 파일을 불러와 조정하고 다른 형식으로 저장할 수 있습니다.')}</p>
+                <button className="button primary" onClick={openImages}>{t('이미지 선택')}</button>
               </div>
             )}
             {selectedImage && controlTab === 'crop' && (
@@ -2024,11 +2057,11 @@ function App() {
           </div>
           {showHistograms && controlTab !== 'crop' && <HistogramPanel histograms={histograms} />}
           <footer className="statusbar">
-            <span>{statusMessage}</span>
+            <span>{t(statusMessage)}</span>
             {selectedImage && <span>{selectedImage.width} × {selectedImage.height}px</span>}
-            <div className="zoom-controls" aria-label="확대 축소">
+            <div className="zoom-controls" aria-label={t('확대 축소')}>
               <button disabled={!selectedImage} onClick={() => changeZoom(zoom / 1.25)}>−</button>
-              <button disabled={!selectedImage} onClick={() => changeZoom(1)}>화면 맞춤</button>
+              <button disabled={!selectedImage} onClick={() => changeZoom(1)}>{t('화면 맞춤')}</button>
               <button disabled={!selectedImage} onClick={() => changeZoom(zoom * 1.25)}>+</button>
               <output>{Math.round(zoom * 100)}%</output>
             </div>
@@ -2036,12 +2069,12 @@ function App() {
               disabled={controlTab === 'crop'}
               onClick={() => setShowHistograms((current) => !current)}
             >
-              {controlTab === 'crop'
+              {t(controlTab === 'crop'
                 ? '히스토그램 비활성'
-                : showHistograms ? '히스토그램 숨기기' : '히스토그램 보기'}
+                : showHistograms ? '히스토그램 숨기기' : '히스토그램 보기')}
             </button>
             <button onClick={() => setShowLogs((current) => !current)}>
-              {showLogs ? '로그 닫기' : `로그 ${debugLogs.length}`}
+              {showLogs ? t('로그 닫기') : `${getLocale() === 'en' ? 'Logs' : '로그'} ${debugLogs.length}`}
             </button>
           </footer>
         </section>
@@ -2049,7 +2082,7 @@ function App() {
         <div
           className="panel-resizer controls-resizer"
           role="separator"
-          aria-label="옵션 패널 너비 조절"
+          aria-label={t('옵션 패널 너비 조절')}
           aria-orientation="vertical"
           aria-valuemin={260}
           aria-valuemax={520}
@@ -2076,14 +2109,14 @@ function App() {
                 setControlTab('adjustments');
               }}
             >
-              보정
+              {t('보정')}
             </button>
             <button
               className={controlTab === 'crop' ? 'active' : ''}
               disabled={!selectedImage}
               onClick={() => setControlTab('crop')}
             >
-              자르기·회전
+              {t('자르기·회전')}
             </button>
           </div>
           <div className="control-scroll">
@@ -2115,9 +2148,9 @@ function App() {
             </fieldset>
           </div>
           <div className="control-footer">
-            <button className="button quiet" disabled={!selectedImage} onClick={resetAll}>전체 초기화</button>
+            <button className="button quiet" disabled={!selectedImage} onClick={resetAll}>{t('전체 초기화')}</button>
             <button className="button primary" disabled={!selectedImage} onClick={() => setRenderQuality('original')}>
-              원본 보기
+              {t('원본 보기')}
             </button>
           </div>
         </aside>
@@ -2127,8 +2160,8 @@ function App() {
       {isDragOver && (
         <div className="drop-overlay" aria-hidden="true">
           <div>
-            <strong>이미지를 여기에 놓으세요</strong>
-            <span>여러 파일을 한 번에 추가할 수 있습니다.</span>
+            <strong>{t('이미지를 여기에 놓으세요')}</strong>
+            <span>{t('여러 파일을 한 번에 추가할 수 있습니다.')}</span>
           </div>
         </div>
       )}
@@ -2139,21 +2172,21 @@ function App() {
           onClick={(event) => event.stopPropagation()}
         >
           {contextMenu.kind === 'image' ? <>
-            <button onClick={() => renameLibraryEntry(contextMenu.id as string)}>별명 변경 (F2)</button>
-            <div className="context-menu-label">폴더로 이동</div>
-            <button onClick={() => moveImageToFolder(contextMenu.id as string, null)}>폴더 없음</button>
+            <button onClick={() => renameLibraryEntry(contextMenu.id as string)}>{t('별명 변경 (F2)')}</button>
+            <div className="context-menu-label">{t('폴더로 이동')}</div>
+            <button onClick={() => moveImageToFolder(contextMenu.id as string, null)}>{t('폴더 없음')}</button>
             {libraryFolders.map((folder) => (
               <button key={folder.id} onClick={() => moveImageToFolder(contextMenu.id as string, folder.id)}>
                 {folder.name}
               </button>
             ))}
             <div className="context-menu-separator" />
-            <button onClick={() => requestRemoveLibraryEntry(contextMenu.id as string)}>목록에서 삭제</button>
+            <button onClick={() => requestRemoveLibraryEntry(contextMenu.id as string)}>{t('목록에서 삭제')}</button>
           </> : <>
-            <button onClick={() => createFolder(contextMenu.id as string)}>하위 폴더 만들기</button>
-            <button onClick={() => renameFolder(contextMenu.id as string)}>폴더 이름 변경</button>
-            <button onClick={() => requestRemoveFolder(contextMenu.id as string)}>폴더 삭제</button>
-            <span>내부 항목은 한 단계 위 폴더로 이동합니다.</span>
+            <button onClick={() => createFolder(contextMenu.id as string)}>{t('하위 폴더 만들기')}</button>
+            <button onClick={() => renameFolder(contextMenu.id as string)}>{t('폴더 이름 변경')}</button>
+            <button onClick={() => requestRemoveFolder(contextMenu.id as string)}>{t('폴더 삭제')}</button>
+            <span>{t('내부 항목은 한 단계 위 폴더로 이동합니다.')}</span>
           </>}
         </div>
       )}
@@ -2172,8 +2205,8 @@ function App() {
             {nameDialog.description && <p>{nameDialog.description}</p>}
             <input name="name" defaultValue={nameDialog.value} autoFocus onFocus={(event) => event.currentTarget.select()} />
             <div className="dialog-actions">
-              <button type="button" className="button quiet" onClick={() => setNameDialog(null)}>취소</button>
-              <button type="submit" className="button primary">확인</button>
+              <button type="button" className="button quiet" onClick={() => setNameDialog(null)}>{t('취소')}</button>
+              <button type="submit" className="button primary">{t('확인')}</button>
             </div>
           </form>
         </div>
@@ -2210,7 +2243,7 @@ function App() {
             <h2 id="confirm-dialog-title">{confirmDialog.title}</h2>
             <p>{confirmDialog.message}</p>
             <div className="dialog-actions">
-              <button className="button quiet" autoFocus onClick={() => setConfirmDialog(null)}>취소</button>
+              <button className="button quiet" autoFocus onClick={() => setConfirmDialog(null)}>{t('취소')}</button>
               <button
                 className="button danger"
                 onClick={() => {
@@ -2218,7 +2251,7 @@ function App() {
                   setConfirmDialog(null);
                 }}
               >
-                삭제
+                {t('삭제')}
               </button>
             </div>
           </div>
@@ -2229,8 +2262,8 @@ function App() {
           <div className="progress-dialog">
             <span className="spinner" aria-hidden="true" />
             <div>
-              <strong>이미지를 저장하고 있습니다</strong>
-              <p>처리가 끝날 때까지 잠시 기다려 주세요.</p>
+              <strong>{t('이미지를 저장하고 있습니다')}</strong>
+              <p>{t('처리가 끝날 때까지 잠시 기다려 주세요.')}</p>
             </div>
           </div>
         </div>
@@ -2239,10 +2272,43 @@ function App() {
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="export-complete-title">
           <div className="result-dialog">
             <div className="success-mark" aria-hidden="true">✓</div>
-            <h2 id="export-complete-title">저장이 완료되었습니다</h2>
+            <h2 id="export-complete-title">{t('저장이 완료되었습니다')}</h2>
             <p>{exportResult.path}</p>
-            <button className="button primary" autoFocus onClick={() => setExportResult(null)}>확인</button>
+            <button className="button primary" autoFocus onClick={() => setExportResult(null)}>{t('확인')}</button>
           </div>
+        </div>
+      )}
+      {showSettings && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setShowSettings(false);
+        }}>
+          <section className="settings-dialog">
+            <div className="settings-heading">
+              <div><span>{t('일반')}</span><h2 id="settings-dialog-title">{t('설정')}</h2></div>
+              <button className="icon-button" aria-label={t('닫기')} onClick={() => setShowSettings(false)}>×</button>
+            </div>
+            <label className="settings-row">
+              <span>{t('언어')}</span>
+              <select value={locale} onChange={(event) => {
+                const nextLocale = event.currentTarget.value as AppLocale;
+                setLocale(nextLocale);
+                setAppLocale(nextLocale);
+              }}>
+                <option value="ko">한국어</option>
+                <option value="en">English</option>
+              </select>
+            </label>
+            <label className="settings-row">
+              <span>{t('화면 모드')}</span>
+              <select value={theme} onChange={(event) => setTheme(event.currentTarget.value as ThemeMode)}>
+                <option value="dark">{t('어두운 화면')}</option>
+                <option value="light">{t('밝은 화면')}</option>
+              </select>
+            </label>
+            <div className="dialog-actions">
+              <button className="button primary" autoFocus onClick={() => setShowSettings(false)}>{t('닫기')}</button>
+            </div>
+          </section>
         </div>
       )}
     </div>
@@ -2313,7 +2379,7 @@ function CropFrame({
     onChange({
       ...crop,
       enabled: true,
-      ratio: active.mode === 'move' ? crop.ratio : '자유',
+      ratio: active.mode === 'move' ? crop.ratio : 'free',
       x,
       y,
       width,
@@ -2353,7 +2419,7 @@ function CropFrame({
       className="crop-frame"
       tabIndex={0}
       role="group"
-      aria-label="자르기 영역. 방향키로 이동"
+      aria-label={t('자르기 영역. 방향키로 이동')}
       style={{
         left: `${crop.x * 100}%`,
         top: `${crop.y * 100}%`,
@@ -2405,11 +2471,11 @@ function CropPanel({
     onEditEnd();
   };
   const changeRatio = (ratio: string) => {
-    if (ratio === '자유') {
+    if (ratio === 'free') {
       commit({ ratio });
       return;
     }
-    if (ratio === '원본') {
+    if (ratio === 'original') {
       const target = imageAspect;
       commit({ ratio, ...maximumFixedRatioCrop(imageAspect, crop.rotation, target) });
       return;
@@ -2428,18 +2494,18 @@ function CropPanel({
     <div className="crop-panel">
       <section className="control-section">
         <div className="crop-heading">
-          <strong>자르기 및 변환</strong>
+          <strong>{t('자르기 및 변환')}</strong>
           <button onClick={() => {
             onEditStart();
             onChange(identityCrop);
             onEditEnd();
-          }}>전체 초기화</button>
+          }}>{t('전체 초기화')}</button>
         </div>
         <label className="crop-field">
-          <span>비율</span>
+          <span>{t('비율')}</span>
           <select value={crop.ratio} onChange={(event) => changeRatio(event.currentTarget.value)}>
-            <option value="원본">원본</option>
-            <option value="자유">자유</option>
+            <option value="original">{t('원본')}</option>
+            <option value="free">{t('자유')}</option>
             <option value="1:1">1:1</option>
             <option value="4:3">4:3</option>
             <option value="3:2">3:2</option>
@@ -2449,7 +2515,7 @@ function CropPanel({
         </label>
         <label className="slider-control">
           <span>
-            <span>수평 맞춤</span>
+            <span>{t('수평 맞춤')}</span>
             <input
               className="slider-value-input"
               type="number"
@@ -2457,7 +2523,7 @@ function CropPanel({
               max="45"
               step="0.1"
               value={rotationDraft}
-              aria-label="수평 맞춤 각도"
+              aria-label={t('수평 맞춤 각도')}
               onFocus={onEditStart}
               onChange={(event) => setRotationDraft(event.currentTarget.value)}
               onBlur={() => {
@@ -2491,8 +2557,8 @@ function CropPanel({
           />
         </label>
         <div className="crop-actions">
-          <button onClick={() => commit({ quarterTurns: (crop.quarterTurns + 3) % 4 })}>↶ 왼쪽 90°</button>
-          <button onClick={() => commit({ quarterTurns: (crop.quarterTurns + 1) % 4 })}>↷ 오른쪽 90°</button>
+          <button onClick={() => commit({ quarterTurns: (crop.quarterTurns + 3) % 4 })}>↶ {t('왼쪽 90°')}</button>
+          <button onClick={() => commit({ quarterTurns: (crop.quarterTurns + 1) % 4 })}>↷ {t('오른쪽 90°')}</button>
           <button
             className={crop.flipHorizontal ? 'active' : ''}
             onClick={() => commit({ flipHorizontal: !crop.flipHorizontal })}
@@ -2553,7 +2619,7 @@ function AngleDial({
   return (
     <div className="angle-control">
       {!hideHeading && <div className="angle-heading">
-        <span>수평 맞춤</span>
+        <span>{t('수평 맞춤')}</span>
         <button onClick={() => {
           onEditStart();
           onChange(0);
@@ -2660,18 +2726,18 @@ function AdjustmentPanel({
   const autoExpanded = expandedSection === 'auto';
   return (
     <>
-      <section className="control-section auto-adjustment-section" aria-label="자동 보정">
+      <section className="control-section auto-adjustment-section" aria-label={t('자동 보정')}>
         <button
           className="control-section-toggle"
           aria-expanded={autoExpanded}
           onClick={() => setExpandedSection((current) => current === 'auto' ? null : 'auto')}
         >
-          <span>자동 보정</span>
+          <span>{t('자동 보정')}</span>
           <span aria-hidden="true">{autoExpanded ? '▾' : '▸'}</span>
         </button>
         {autoExpanded && (
           <div className="control-section-content">
-            <p className="auto-adjustment-description">현재 사진의 밝기와 RGB 분포를 분석합니다.</p>
+            <p className="auto-adjustment-description">{t('현재 사진의 밝기와 RGB 분포를 분석합니다.')}</p>
             <div className="auto-adjustment-options">
               {([
                 ['balanced', '기본'],
@@ -2685,13 +2751,13 @@ function AdjustmentPanel({
                   disabled={!autoAdjustmentAvailable}
                   onClick={() => onAutoAdjustment(preset)}
                 >
-                  {label}
+                  {t(label)}
                 </button>
               ))}
             </div>
             <div className="preset-file-actions">
-              <button type="button" onClick={onImportPreset}>XMP 가져오기</button>
-              <button type="button" onClick={onExportPreset}>XMP 내보내기</button>
+              <button type="button" onClick={onImportPreset}>{t('XMP 가져오기')}</button>
+              <button type="button" onClick={onExportPreset}>{t('XMP 내보내기')}</button>
             </div>
           </div>
         )}
@@ -2706,13 +2772,13 @@ function AdjustmentPanel({
               onClick={() => setExpandedSection((current) =>
                 current === section.id ? null : section.id)}
             >
-              <span>{section.title}</span>
+              <span>{t(section.title)}</span>
               <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
             </button>
             {expanded && (
               <div className="control-section-content">
                 {section.id === 'color' && (
-                  <div className="white-balance-presets" aria-label="화이트 밸런스">
+                  <div className="white-balance-presets" aria-label={t('화이트 밸런스')}>
                     <span>WB</span>
                     {([
                       ['원본값', 0, 0], ['일광', 10, 0], ['흐림', 20, 2],
@@ -2723,7 +2789,7 @@ function AdjustmentPanel({
                         onSlider('color', 'temperature', temperature);
                         onSlider('color', 'tint', tint);
                         onEditEnd();
-                      }}>{label}</button>
+                      }}>{t(label)}</button>
                     ))}
                   </div>
                 )}
@@ -2734,7 +2800,7 @@ function AdjustmentPanel({
                       aria-expanded={curveExpanded}
                       onClick={() => setCurveExpanded((current) => !current)}
                     >
-                      <span>RGB 커브</span>
+                      <span>{t('RGB 커브')}</span>
                       <span aria-hidden="true">{curveExpanded ? '▾' : '▸'}</span>
                     </button>
                     {curveExpanded && (
@@ -2871,7 +2937,7 @@ function CurveEditor({
           onEditStart();
           (['rgb', 'red', 'green', 'blue'] as CurveChannel[]).forEach((item) => onChange(item, []));
           onEditEnd();
-        }}>전체 초기화</button>
+        }}>{t('전체 초기화')}</button>
       </div>
       <svg
         ref={svgRef}
@@ -2927,9 +2993,9 @@ function CurveEditor({
         ))}
       </svg>
       <div className="curve-labels">
-        <span>더블클릭: 점 추가</span>
+        <span>{t('더블클릭: 점 추가')}</span>
         <span>{points.length}/8</span>
-        <span>우클릭: 제거</span>
+        <span>{t('우클릭: 제거')}</span>
       </div>
     </div>
   );
@@ -2987,7 +3053,7 @@ function SliderControl({
   return (
     <label className="slider-control">
       <span>
-        <span>{control.label}</span>
+        <span>{t(control.label)}</span>
         <input
           className="slider-value-input"
           type="number"
@@ -2995,7 +3061,7 @@ function SliderControl({
           max={control.max}
           step={control.step ?? 1}
           value={draft}
-          aria-label={`${control.label} 값`}
+          aria-label={`${t(control.label)} ${getLocale() === 'en' ? 'value' : '값'}`}
           onFocus={onEditStart}
           onChange={(event) => setDraft(event.currentTarget.value)}
           onBlur={commitDraft}
@@ -3032,14 +3098,14 @@ function DebugLogPanel({ logs, onClear }: { logs: DebugLogEntry[]; onClear: () =
   return (
     <section className="debug-panel">
       <header>
-        <strong>처리 로그</strong>
-        <button onClick={onClear} disabled={!logs.length}>지우기</button>
+        <strong>{t('처리 로그')}</strong>
+        <button onClick={onClear} disabled={!logs.length}>{t('지우기')}</button>
       </header>
       <div className="debug-list">
-        {!logs.length && <span>표시할 로그가 없습니다.</span>}
+        {!logs.length && <span>{t('표시할 로그가 없습니다.')}</span>}
         {logs.map((entry) => (
           <div key={entry.id} className={`log-${entry.level}`}>
-            <time>{new Date(entry.timestamp).toLocaleTimeString('ko-KR', { hour12: false })}</time>
+            <time>{new Date(entry.timestamp).toLocaleTimeString(getLocale() === 'en' ? 'en-US' : 'ko-KR', { hour12: false })}</time>
             <strong>{entry.level.toUpperCase()}</strong>
             <span>[{entry.source}] {entry.message}</span>
           </div>

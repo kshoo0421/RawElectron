@@ -24,6 +24,8 @@ import type {
 } from './shared/engineTypes';
 import { exportCameraRawXmp, importCameraRawXmp } from './shared/presetXmp';
 import type { PresetValues } from './shared/presetXmp';
+import { defaultAppSettings, sanitizeAppSettings } from './shared/appSettings';
+import type { AppSettings } from './shared/appSettings';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -46,11 +48,30 @@ const engineWorker = new EngineWorker();
 const previewRoot = path.join(app.getPath('temp'), 'RawElectron', 'preview');
 const editStatePath = path.join(app.getPath('userData'), 'edit-states.json');
 const libraryStatePath = path.join(app.getPath('userData'), 'library-state.json');
+const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 const debugLogs: DebugLogEntry[] = [];
 const imagePaths = new Map<number, string>();
 const openImagesByPath = new Map<string, ImageFile>();
 const initialPreviewLogged = new Set<number>();
 let nextDebugLogId = 1;
+
+function readAppSettings(): AppSettings {
+  try {
+    return sanitizeAppSettings(JSON.parse(fs.readFileSync(settingsPath, 'utf8')));
+  } catch {
+    return defaultAppSettings;
+  }
+}
+
+function writeAppSettings(value: unknown) {
+  const settings = sanitizeAppSettings(value);
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+  return settings;
+}
+
+ipcMain.handle('settings:load', () => readAppSettings());
+ipcMain.handle('settings:save', (_event, value: unknown) => writeAppSettings(value));
 
 function debugLog(level: DebugLogLevel, source: string, message: string) {
   const entry: DebugLogEntry = {
@@ -80,8 +101,9 @@ ipcMain.on('debug-logs:report-info', (_event, payload: { source?: unknown; messa
 });
 
 ipcMain.handle('presets:import-xmp', async () => {
+  const locale = readAppSettings().locale;
   const result = await dialog.showOpenDialog({
-    title: 'XMP 프리셋 가져오기',
+    title: locale === 'en' ? 'Import XMP preset' : 'XMP 프리셋 가져오기',
     properties: ['openFile'],
     filters: [{ name: 'Adobe Camera Raw preset', extensions: ['xmp'] }],
   });
@@ -91,8 +113,9 @@ ipcMain.handle('presets:import-xmp', async () => {
 });
 
 ipcMain.handle('presets:export-xmp', async (_event, values: PresetValues) => {
+  const locale = readAppSettings().locale;
   const result = await dialog.showSaveDialog({
-    title: 'XMP 프리셋 내보내기',
+    title: locale === 'en' ? 'Export XMP preset' : 'XMP 프리셋 내보내기',
     defaultPath: 'RawElectron Preset.xmp',
     filters: [{ name: 'Adobe Camera Raw preset', extensions: ['xmp'] }],
   });
@@ -220,7 +243,7 @@ async function openImagePaths(filePaths: string[]) {
 ipcMain.handle('images:open', async (): Promise<ImageFile[]> => {
   debugLog('info', '파일', '이미지 선택 창을 열었습니다.');
   const result = await dialog.showOpenDialog({
-    title: 'Open images',
+    title: readAppSettings().locale === 'en' ? 'Open images' : '이미지 열기',
     properties: ['openFile', 'multiSelections'],
     filters: imageOpenFilters,
   });
@@ -320,7 +343,7 @@ ipcMain.handle('images:export', async (
     : 'jpeg';
   const definition = imageExportFormats[format];
   const result = await dialog.showSaveDialog({
-    title: 'Export image',
+    title: readAppSettings().locale === 'en' ? 'Export image' : '이미지 내보내기',
     defaultPath: `${parsedSource.name}.${definition.extension}`,
     filters: [{ name: definition.name, extensions: definition.extensions }],
   });
