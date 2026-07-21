@@ -5,7 +5,7 @@ let activeLocale: AppLocale = 'ko';
 const english: Record<string, string> = {
   '이미지 편집기': 'Image editor', '편집 기록': 'Edit history', '실행 취소': 'Undo', '다시 실행': 'Redo',
   '파일 열기': 'Open files', '저장 형식': 'Save format', '저장 중…': 'Saving…', '다른 이름으로 저장': 'Save as',
-  '밝은 화면': 'Light theme', '어두운 화면': 'Dark theme', '설정': 'Settings', '일반': 'General',
+  '시스템 모드': 'System mode', '라이트 모드': 'Light mode', '다크 모드': 'Dark mode', '설정': 'Settings', '일반': 'General',
   '언어': 'Language', '한국어': 'Korean', '영어': 'English', '화면 모드': 'Appearance', '닫기': 'Close',
   '파일 목록': 'File library', '+ 폴더': '+ Folder', '+ 파일': '+ File', '최상위로 이동': 'Go to top',
   '파일과 폴더가 없습니다.': 'There are no files or folders.', '원본 보기': 'Original', '미리보기': 'Preview',

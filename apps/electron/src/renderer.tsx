@@ -510,6 +510,9 @@ function deserializeEditState(stored: PersistedEditState | null): EditState {
 
 function App() {
   const [theme, setTheme] = useState<ThemeMode>(defaultAppSettings.theme);
+  const [systemTheme, setSystemTheme] = useState<'light' | 'dark'>(() =>
+    window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  );
   const [locale, setAppLocale] = useState<AppLocale>(defaultAppSettings.locale);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -603,6 +606,13 @@ function App() {
       setSettingsLoaded(true);
     }).catch(() => setSettingsLoaded(true));
     return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: light)');
+    const updateSystemTheme = (event: MediaQueryListEvent) => setSystemTheme(event.matches ? 'light' : 'dark');
+    media.addEventListener('change', updateSystemTheme);
+    return () => media.removeEventListener('change', updateSystemTheme);
   }, []);
 
   useEffect(() => {
@@ -1003,7 +1013,13 @@ function App() {
       }
       if (event.key !== 'Delete' || isExporting) return;
       const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLButtonElement) return;
+      const isLibraryItem = target instanceof Element && Boolean(target.closest('.image-item, .folder-heading'));
+      if (target instanceof HTMLInputElement ||
+          target instanceof HTMLSelectElement ||
+          target instanceof HTMLTextAreaElement ||
+          (target instanceof HTMLElement && target.isContentEditable) ||
+          (target instanceof HTMLButtonElement && !isLibraryItem) ||
+          nameDialog || confirmDialog || showSettings || exportResult) return;
       if (!selectedFolderId && !selectedLibraryPath) return;
       event.preventDefault();
       if (selectedFolderId) requestRemoveFolder(selectedFolderId);
@@ -1779,7 +1795,7 @@ function App() {
   return (
     <div
       className="raw-app"
-      data-theme={theme}
+      data-theme={theme === 'system' ? systemTheme : theme}
       data-logs={showLogs}
       onDragEnter={(event) => {
         if (event.dataTransfer.types.includes('Files')) setIsDragOver(true);
@@ -1848,9 +1864,6 @@ function App() {
           </label>
           <button className="button primary" disabled={!selectedImage || isExporting} onClick={exportImage}>
             {isExporting ? t('저장 중…') : t('다른 이름으로 저장')}
-          </button>
-          <button className="button quiet" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}>
-            {theme === 'dark' ? t('밝은 화면') : t('어두운 화면')}
           </button>
           <button className="button quiet" aria-label={t('설정')} onClick={() => setShowSettings(true)}>
             ⚙ {t('설정')}
@@ -2149,9 +2162,6 @@ function App() {
           </div>
           <div className="control-footer">
             <button className="button quiet" disabled={!selectedImage} onClick={resetAll}>{t('전체 초기화')}</button>
-            <button className="button primary" disabled={!selectedImage} onClick={() => setRenderQuality('original')}>
-              {t('원본 보기')}
-            </button>
           </div>
         </aside>
       </main>
@@ -2301,8 +2311,9 @@ function App() {
             <label className="settings-row">
               <span>{t('화면 모드')}</span>
               <select value={theme} onChange={(event) => setTheme(event.currentTarget.value as ThemeMode)}>
-                <option value="dark">{t('어두운 화면')}</option>
-                <option value="light">{t('밝은 화면')}</option>
+                <option value="system">{t('시스템 모드')}</option>
+                <option value="light">{t('라이트 모드')}</option>
+                <option value="dark">{t('다크 모드')}</option>
               </select>
             </label>
             <div className="dialog-actions">
@@ -2666,10 +2677,10 @@ function AngleDial({
 
 function HistogramPanel({ histograms }: { histograms: Histograms | null }) {
   const graphs: Array<{ key: keyof Histograms; label: string; color: string }> = [
-    { key: 'luminance', label: '노출', color: '#dfe4eb' },
-    { key: 'red', label: 'R', color: '#ff6868' },
-    { key: 'green', label: 'G', color: '#54d17a' },
-    { key: 'blue', label: 'B', color: '#6598ff' },
+    { key: 'luminance', label: '노출', color: 'var(--histogram-luminance)' },
+    { key: 'red', label: 'R', color: 'var(--histogram-red)' },
+    { key: 'green', label: 'G', color: 'var(--histogram-green)' },
+    { key: 'blue', label: 'B', color: 'var(--histogram-blue)' },
   ];
   return (
     <div className="histogram-panel" aria-label="RGB 색상 분포">
