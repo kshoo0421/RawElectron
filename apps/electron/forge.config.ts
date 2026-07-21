@@ -28,6 +28,27 @@ const findNativeRuntimeLibraries = (root: string): string[] => {
 };
 
 const opencvInstallRoot = path.resolve(__dirname, '..', '..', 'third_party', 'opencv', 'install');
+const packagedLocales = new Set(['ko.pak', 'en-US.pak']);
+
+const prunePackagedLocales = (outputPath: string): void => {
+  const queue = [outputPath];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) continue;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(entryPath);
+      } else if (
+        path.basename(current).toLowerCase() === 'locales'
+        && entry.name.endsWith('.pak')
+        && !packagedLocales.has(entry.name)
+      ) {
+        fs.rmSync(entryPath);
+      }
+    }
+  }
+};
 
 const nativeResourceCandidates = [
   path.resolve(__dirname, 'native', 'build', 'Release', 'rawelectron_engine.node'),
@@ -38,6 +59,7 @@ const nativeResourceCandidates = [
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    prune: true,
     appBundleId: 'com.rawelectron.app',
     executableName: 'RawElectron',
     osxSign: {
@@ -48,6 +70,12 @@ const config: ForgeConfig = {
   rebuildConfig: {},
   hooks: {
     postPackage: async (_forgeConfig, packageResult) => {
+      // Electron Packager ships every Chromium locale by default. The UI only
+      // supports Korean and English, so remove the other packs before making.
+      for (const outputPath of packageResult.outputPaths) {
+        prunePackagedLocales(outputPath);
+      }
+
       if (process.platform !== 'darwin' || packageResult.platform !== 'darwin') return;
 
       for (const outputPath of packageResult.outputPaths) {

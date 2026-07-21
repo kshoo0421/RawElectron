@@ -164,6 +164,7 @@ def ensure_vendored_opencv(environment, config):
         "-DBUILD_DOCS=OFF", "-DBUILD_opencv_apps=OFF", "-DBUILD_JAVA=OFF",
         "-DBUILD_opencv_gapi=OFF", "-DBUILD_opencv_python_bindings_generator=OFF",
         "-DOPENCV_PYTHON_SKIP_DETECTION=ON", "-DWITH_FFMPEG=OFF", "-DWITH_IPP=OFF",
+        "-DWITH_OPENCL=OFF", "-DWITH_OPENGL=OFF", "-DWITH_VULKAN=OFF",
     ], ROOT, environment)
     run([cmake, "--build", build_dir, "--target", "install"], ROOT, environment)
     if not opencv_is_installed(install_dir):
@@ -192,6 +193,7 @@ def main():
             f"-DCMAKE_MAKE_PROGRAM={ninja}",
             f"-DCMAKE_BUILD_TYPE={args.config}",
             f"-DRAWELECTRON_OPENCV_INSTALL_DIR={opencv_dir}",
+            "-DRAWELECTRON_BUILD_TESTS=OFF",
         ], ROOT, build_env)
         run([cmake, "--build", ENGINE_BUILD_DIR], ROOT, build_env)
 
